@@ -1,9 +1,11 @@
 import type { BomNode } from '@/types/models';
 import { round2 } from '@/lib/money';
 
-/** Own cost: final node quote (ZAKUPOWA) else material + operation prices. */
+/** Own cost: final node quote when no ops (ZAKUPOWA); else material + operation prices. */
 export function computeOwnCost(node: BomNode): number {
-  const finalOffer = node.supplierOffers.find(o => o.isFinal);
+  const finalOffer = (node.operations?.length ?? 0) === 0
+    ? node.supplierOffers.find(o => o.isFinal)
+    : undefined;
   if (finalOffer) return round2(finalOffer.cena || 0);
 
   const opsSum = (node.operations ?? []).reduce((acc, o) => acc + (o.cena || 0), 0);

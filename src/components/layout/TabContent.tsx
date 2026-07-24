@@ -1,18 +1,17 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useTabsStore, type Tab } from '@/stores/tabsStore';
 import type { DictEntity } from '@/api/dictionaryService';
 import { DictionaryManager } from '@/components/dictionary/DictionaryManager';
 import { RfqGrid } from '@/components/rfq/RfqGrid';
 import { RfqDetail } from '@/components/rfq/RfqDetail';
-import { BomTree, type BomTreeHandle } from '@/components/bom/BomTree';
+import { BomTree } from '@/components/bom/BomTree';
 import { TemplateList } from '@/components/template/TemplateList';
 import { OfferGrid } from '@/components/offer/OfferGrid';
 import { OfferDetail } from '@/components/offer/OfferDetail';
 
 function BomTab({ tab }: { tab: Tab }) {
   const setTabDirty = useTabsStore(s => s.setTabDirty);
-  const ref = useRef<BomTreeHandle>(null);
   const onDirty = useCallback(
     (dirty: boolean) => setTabDirty(tab.id, dirty),
     [setTabDirty, tab.id]
@@ -24,7 +23,6 @@ function BomTab({ tab }: { tab: Tab }) {
 
   return (
     <BomTree
-      ref={ref}
       ownerType={tab.ownerType ?? 'rfq'}
       ownerId={tab.entityId!}
       onDirtyChange={onDirty}

@@ -60,7 +60,8 @@
     "confirmDelete": "Czy na pewno usunąć ten wpis?",
     "welcome": "Wybierz pozycję z menu po lewej stronie",
     "select": "Wybierz…",
-    "savedAt": "Zapisano {{time}}"
+    "savedAt": "Zapisano {{time}}",
+    "discardUnsaved": "Niezapisane zmiany. Zamknąć bez zapisu?"
   },
   "dialog": {
     "addTitle": "Dodaj wpis",

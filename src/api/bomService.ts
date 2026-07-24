@@ -165,8 +165,7 @@ export async function deleteNode(id: number): Promise<boolean> {
   return true;
 }
 
-/** Apply supplier offers locally (caller persists via replaceTree / updateNode). */
-export function applyNodeSupplierOffers(node: BomNode, offers: SupplierOffer[]): BomNode {
+function clampOffers(offers: SupplierOffer[]): SupplierOffer[] {
   const limited = offers.slice(0, 3);
   let finalCount = 0;
   limited.forEach(o => {
@@ -175,7 +174,12 @@ export function applyNodeSupplierOffers(node: BomNode, offers: SupplierOffer[]):
       if (finalCount > 1) o.isFinal = false;
     }
   });
-  return { ...node, supplierOffers: limited };
+  return limited;
+}
+
+/** Apply supplier offers locally (caller persists via replaceTree / updateNode). */
+export function applyNodeSupplierOffers(node: BomNode, offers: SupplierOffer[]): BomNode {
+  return { ...node, supplierOffers: clampOffers(offers) };
 }
 
 /** Final quote → operation.cena (+ optional supplierId). */
@@ -183,14 +187,7 @@ export function applyOperationSupplierOffers(
   op: BomNodeOperation,
   offers: SupplierOffer[]
 ): BomNodeOperation {
-  const limited = offers.slice(0, 3);
-  let finalCount = 0;
-  limited.forEach(o => {
-    if (o.isFinal) {
-      finalCount++;
-      if (finalCount > 1) o.isFinal = false;
-    }
-  });
+  const limited = clampOffers(offers);
   const finalOffer = limited.find(o => o.isFinal);
   return {
     ...op,

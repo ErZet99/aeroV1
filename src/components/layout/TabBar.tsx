@@ -9,6 +9,14 @@ export function TabBar() {
   const activateTab = useTabsStore(s => s.activateTab);
   const closeTab = useTabsStore(s => s.closeTab);
 
+  function handleClose(tabId: string, dirty: boolean | undefined) {
+    if (dirty) {
+      // Prototype: discard-or-stay (document Zapisz first for save).
+      if (!window.confirm(t('common.discardUnsaved'))) return;
+    }
+    closeTab(tabId);
+  }
+
   return (
     <div className="flex h-10 shrink-0 items-end gap-1 overflow-x-auto border-b bg-muted/30 px-2">
       {tabs.map(tab => (
@@ -34,7 +42,7 @@ export function TabBar() {
             className="rounded px-1 text-muted-foreground hover:bg-accent hover:text-foreground"
             onClick={(e) => {
               e.stopPropagation();
-              closeTab(tab.id);
+              handleClose(tab.id, tab.dirty);
             }}
           >
             ✕

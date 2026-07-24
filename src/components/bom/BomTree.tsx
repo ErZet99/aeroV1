@@ -32,7 +32,7 @@ import type {
   Template,
 } from '@/types/models';
 import { computedUnitCost, recalcTree } from '@/services/costService';
-import { formatPln, round2 } from '@/lib/money';
+import { formatPln } from '@/lib/money';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -116,6 +116,7 @@ export const BomTree = forwardRef<BomTreeHandle, BomTreeProps>(function BomTree(
   const [templates, setTemplates] = useState<Template[]>([]);
   const [expanded, setExpanded] = useState<ExpandedState>(true);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [activeRootId, setActiveRootId] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<string | null>(null);
 
@@ -155,6 +156,7 @@ export const BomTree = forwardRef<BomTreeHandle, BomTreeProps>(function BomTree(
     setTemplates(templateData);
     setExpanded(true);
     setSelectedId(null);
+    setActiveRootId(null);
   }, [ownerType, ownerId]);
 
   useEffect(() => {
@@ -186,11 +188,25 @@ export const BomTree = forwardRef<BomTreeHandle, BomTreeProps>(function BomTree(
     [save, nodes, committed]
   );
 
-  const treeData = useMemo(() => buildTree(nodes), [nodes]);
+  const treeData = useMemo(() => {
+    const all = buildTree(nodes);
+    if (activeRootId === null) return all;
+    return all.filter(r => r.id === activeRootId);
+  }, [nodes, activeRootId]);
   const roots = useMemo(
     () => nodes.filter(n => n.parentId === null).sort((a, b) => a.lp - b.lp),
     [nodes]
   );
+
+  useEffect(() => {
+    if (roots.length === 0) {
+      setActiveRootId(null);
+      return;
+    }
+    if (activeRootId === null || !roots.some(r => r.id === activeRootId)) {
+      setActiveRootId(roots[0].id);
+    }
+  }, [roots, activeRootId]);
 
   const labelMaps = useMemo(
     () => ({
@@ -454,7 +470,14 @@ export const BomTree = forwardRef<BomTreeHandle, BomTreeProps>(function BomTree(
       {roots.length > 0 && (
         <div className="flex flex-wrap gap-3">
           {roots.map(root => (
-            <Card key={root.id} className="min-w-56">
+            <Card
+              key={root.id}
+              className={cn(
+                'min-w-56 cursor-pointer',
+                activeRootId === root.id && 'ring-2 ring-primary'
+              )}
+              onClick={() => setActiveRootId(root.id)}
+            >
               <CardHeader>
                 <CardTitle>{root.nazwaOpis}</CardTitle>
               </CardHeader>
@@ -468,21 +491,6 @@ export const BomTree = forwardRef<BomTreeHandle, BomTreeProps>(function BomTree(
               </CardContent>
             </Card>
           ))}
-          {roots.length > 1 && (
-            <Card className="min-w-48">
-              <CardHeader>
-                <CardTitle>{t('bom.razem')}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex flex-col">
-                  <span className="text-xs text-muted-foreground">{t('bom.kosztWykonania')}</span>
-                  <span className="text-lg font-semibold tabular-nums">
-                    {formatPln(round2(roots.reduce((acc, r) => acc + r.totalCost, 0)))}
-                  </span>
-                </div>
-              </CardContent>
-            </Card>
-          )}
         </div>
       )}
 
