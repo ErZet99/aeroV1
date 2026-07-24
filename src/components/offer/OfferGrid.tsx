@@ -34,7 +34,7 @@ export const OFFER_STATUS_BADGE: Record<
 interface OfferRow {
   id: number;
   numer: string;
-  revision: string;
+  revision: string | null;
   clientName: string;
   status: OfferStatus;
   wartosc: number;
@@ -116,7 +116,7 @@ export function OfferGrid() {
                   </span>
                 </TableCell>
                 <TableCell>
-                  <Badge variant="outline">{row.revision}</Badge>
+                  <Badge variant="outline">{row.revision ?? '—'}</Badge>
                 </TableCell>
                 <TableCell>{row.clientName}</TableCell>
                 <TableCell>

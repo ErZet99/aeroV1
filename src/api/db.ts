@@ -1,6 +1,6 @@
 import type {
   User, Entity, Client, Supplier, DictItem, Holiday, Rfq, BomNode, Template, Offer, OfferLine,
-  ComponentGroup, ComponentKind, Operation, ComponentKindSupplier,
+  OfferRevision, ComponentGroup, ComponentKind, Operation, ComponentKindSupplier,
 } from '@/types/models';
 import {
   seedUsers,
@@ -17,6 +17,7 @@ import {
   seedTemplates,
   seedOffers,
   seedOfferLines,
+  seedOfferRevisions,
   seedComponentGroups,
   seedComponentKinds,
   seedOperations,
@@ -43,6 +44,7 @@ export interface Db {
   templates: Template[];
   offers: Offer[];
   offerLines: OfferLine[];
+  offerRevisions: OfferRevision[];
   counters: Record<string, number>;
 }
 
@@ -55,7 +57,7 @@ export class ConflictError extends Error {
   }
 }
 
-const DB_KEY = 'aero-erp-db-v5';
+const DB_KEY = 'aero-erp-db-v6';
 
 function createInitialDb(): Db {
   const bomNodes = JSON.parse(JSON.stringify(seedBomNodes)) as BomNode[];
@@ -105,6 +107,7 @@ function createInitialDb(): Db {
     templates: JSON.parse(JSON.stringify(seedTemplates)),
     offers: JSON.parse(JSON.stringify(seedOffers)),
     offerLines: JSON.parse(JSON.stringify(seedOfferLines)),
+    offerRevisions: JSON.parse(JSON.stringify(seedOfferRevisions)),
     counters: {
       users: 4,
       entities: 3,
@@ -124,6 +127,7 @@ function createInitialDb(): Db {
       templates: 3,
       offers: 3,
       offerLines: 3,
+      offerRevisions: 2,
     },
   };
 }
@@ -187,6 +191,14 @@ export function getDb(): Db {
       if (!db.suppliers?.length) {
         db.suppliers = JSON.parse(JSON.stringify(seedSuppliers));
       }
+      if (!db.offerRevisions) {
+        db.offerRevisions = JSON.parse(JSON.stringify(seedOfferRevisions));
+      }
+      for (const offer of db.offers ?? []) {
+        if (!('globalMarginPct' in offer)) {
+          (offer as Offer).globalMarginPct = null;
+        }
+      }
       saveDb();
     } else {
       db = createInitialDb();
@@ -212,6 +224,7 @@ export function nextId(collection: keyof Omit<Db, 'counters'>): number {
 /** Wipe persisted DB. Pass reload=true from UI; tests omit reload. */
 export function resetDb(reload = false): void {
   storageRemove(DB_KEY);
+  storageRemove('aero-erp-db-v5');
   storageRemove('aero-erp-db-v4');
   storageRemove('aero-erp-db-v3');
   storageRemove('aero-erp-db-v2');

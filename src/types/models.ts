@@ -179,16 +179,51 @@ export interface Offer {
   id: number;
   rfqId: number;
   numer: string;
-  revision: string;
+  /** Latest frozen revision label (`A`…), or null when none exist yet. */
+  revision: string | null;
   entityId: number;
   clientId: number;
   nrZamowieniaKlienta: string | null;
   status: OfferStatus;
   rabatType: RabatType | null;
   rabatValue: number | null;
+  globalMarginPct: number | null;
   salesRepId: number;
   deliveryTimeId: number | null;
   version: number;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Header + lines frozen inside an offer revision. */
+export interface OfferDocumentSnapshot {
+  numer: string;
+  entityId: number;
+  clientId: number;
+  nrZamowieniaKlienta: string | null;
+  rabatType: RabatType | null;
+  rabatValue: number | null;
+  globalMarginPct: number | null;
+  salesRepId: number;
+  deliveryTimeId: number | null;
+  lines: Array<{
+    lp: number;
+    nazwaPrzyrzadu: string;
+    ilosc: number;
+    sourceRfqId: number | null;
+    sourceBomNodeId: number | null;
+    kosztWykonania: number;
+    negocjacje: number;
+    cenaSprzedazy: number;
+  }>;
+}
+
+/** Immutable frozen snapshot of an offer working copy. */
+export interface OfferRevision {
+  id: number;
+  offerId: number;
+  revision: string;
+  snapshot: OfferDocumentSnapshot;
+  createdBy: number;
+  createdAt: string;
 }

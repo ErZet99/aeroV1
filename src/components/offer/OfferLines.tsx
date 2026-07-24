@@ -7,9 +7,7 @@ import {
   useReactTable,
 } from '@tanstack/react-table';
 import type { ColumnDef } from '@tanstack/react-table';
-import * as offerService from '@/api/offerService';
 import type { OfferLineDTO } from '@/api/offerService';
-import type { OfferStatus } from '@/types/enums';
 import { formatPln, round2 } from '@/lib/money';
 import { Input } from '@/components/ui/input';
 import {
@@ -23,25 +21,17 @@ import {
 
 interface OfferLinesProps {
   lines: OfferLineDTO[];
-  status: OfferStatus;
-  onChanged: () => void;
+  readOnly?: boolean;
+  onLineChange: (lineId: number, field: 'negocjacje' | 'cenaSprzedazy', value: number) => void;
 }
 
 const columnHelper = createColumnHelper<OfferLineDTO>();
 
-export function OfferLines({ lines, status, onChanged }: OfferLinesProps) {
+export function OfferLines({ lines, readOnly = false, onLineChange }: OfferLinesProps) {
   const { t } = useTranslation();
 
   // CRITICAL (PRD §3.2): profit columns exist only when the DTO carries the fields.
-  // The mock service strips them for PRACOWNIK; the UI must never compute them locally.
   const showProfit = lines.length > 0 && lines[0].zysk !== undefined;
-
-  async function commit(line: OfferLineDTO, field: 'negocjacje' | 'cenaSprzedazy', raw: string) {
-    const value = round2(Number(raw) || 0);
-    if (value === line[field]) return;
-    await offerService.updateLine(line.id, { [field]: value });
-    onChanged();
-  }
 
   const columns = useMemo(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -51,41 +41,42 @@ export function OfferLines({ lines, status, onChanged }: OfferLinesProps) {
       columnHelper.accessor('ilosc', { header: t('offer.ilosc') }),
       columnHelper.accessor('kosztWykonania', {
         header: t('offer.kosztWykonania'),
-        cell: info => (
-          <span className="whitespace-nowrap">
-            {formatPln(info.getValue())}
-            {status === 'SZKIC' && (
-              <span className="ml-1 text-xs text-muted-foreground">{t('offer.naZywo')}</span>
-            )}
-          </span>
-        ),
+        cell: info => <span className="whitespace-nowrap">{formatPln(info.getValue())}</span>,
       }),
       columnHelper.accessor('negocjacje', {
         header: t('offer.negocjacje'),
-        cell: ({ row }) => (
-          <Input
-            key={`${row.original.id}-neg-${row.original.negocjacje}`}
-            type="number"
-            step="0.01"
-            className="w-28"
-            defaultValue={row.original.negocjacje}
-            onBlur={(e) => void commit(row.original, 'negocjacje', e.target.value)}
-          />
-        ),
+        cell: ({ row }) =>
+          readOnly ? (
+            formatPln(row.original.negocjacje)
+          ) : (
+            <Input
+              type="number"
+              step="0.01"
+              className="w-28"
+              value={row.original.negocjacje}
+              onChange={(e) =>
+                onLineChange(row.original.id, 'negocjacje', round2(Number(e.target.value) || 0))
+              }
+            />
+          ),
       }),
       columnHelper.accessor('cenaSprzedazy', {
         header: t('offer.cenaSprzedazy'),
-        cell: ({ row }) => (
-          <Input
-            key={`${row.original.id}-cena-${row.original.cenaSprzedazy}`}
-            type="number"
-            step="0.01"
-            min={0}
-            className="w-28"
-            defaultValue={row.original.cenaSprzedazy}
-            onBlur={(e) => void commit(row.original, 'cenaSprzedazy', e.target.value)}
-          />
-        ),
+        cell: ({ row }) =>
+          readOnly ? (
+            formatPln(row.original.cenaSprzedazy)
+          ) : (
+            <Input
+              type="number"
+              step="0.01"
+              min={0}
+              className="w-28"
+              value={row.original.cenaSprzedazy}
+              onChange={(e) =>
+                onLineChange(row.original.id, 'cenaSprzedazy', round2(Number(e.target.value) || 0))
+              }
+            />
+          ),
       }),
       columnHelper.accessor('wartosc', {
         header: t('offer.wartosc'),
@@ -109,8 +100,7 @@ export function OfferLines({ lines, status, onChanged }: OfferLinesProps) {
     }
 
     return cols;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [t, status, showProfit, lines]);
+  }, [t, showProfit, readOnly, onLineChange]);
 
   const table = useReactTable({
     data: lines,
@@ -121,31 +111,31 @@ export function OfferLines({ lines, status, onChanged }: OfferLinesProps) {
   return (
     <div className="flex flex-col gap-2">
       <h3 className="text-sm font-semibold">{t('offer.linie')}</h3>
-      <div className="rounded-md border overflow-x-auto">
+      <div className="overflow-x-auto rounded-md border">
         <Table className="min-w-[1200px]">
-        <TableHeader>
-          {table.getHeaderGroups().map(headerGroup => (
-            <TableRow key={headerGroup.id}>
-              {headerGroup.headers.map(header => (
-                <TableHead key={header.id} className="whitespace-nowrap">
-                  {flexRender(header.column.columnDef.header, header.getContext())}
-                </TableHead>
-              ))}
-            </TableRow>
-          ))}
-        </TableHeader>
-        <TableBody>
-          {table.getRowModel().rows.map(row => (
-            <TableRow key={row.id}>
-              {row.getVisibleCells().map(cell => (
-                <TableCell key={cell.id}>
-                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                </TableCell>
-              ))}
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+          <TableHeader>
+            {table.getHeaderGroups().map(headerGroup => (
+              <TableRow key={headerGroup.id}>
+                {headerGroup.headers.map(header => (
+                  <TableHead key={header.id} className="whitespace-nowrap">
+                    {flexRender(header.column.columnDef.header, header.getContext())}
+                  </TableHead>
+                ))}
+              </TableRow>
+            ))}
+          </TableHeader>
+          <TableBody>
+            {table.getRowModel().rows.map(row => (
+              <TableRow key={row.id}>
+                {row.getVisibleCells().map(cell => (
+                  <TableCell key={cell.id}>
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </TableCell>
+                ))}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       </div>
     </div>
   );

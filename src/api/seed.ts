@@ -1,4 +1,5 @@
-import type { User, Entity, Client, DictItem, Holiday, Rfq, BomNode, Template, Offer, OfferLine } from '@/types/models';
+import type { User, Entity, Client, DictItem, Holiday, Rfq, BomNode, Template, Offer, OfferLine, OfferRevision } from '@/types/models';
+import { captureSnapshot } from '@/services/offerDocument';
 
 export {
   seedCascadeSuppliers,
@@ -930,13 +931,14 @@ export const seedOffers: Offer[] = [
     id: 1,
     rfqId: 1,
     numer: '2150-05-2026',
-    revision: 'A',
+    revision: null,
     entityId: 1,
     clientId: 1,
     nrZamowieniaKlienta: null,
     status: 'SZKIC',
     rabatType: null,
     rabatValue: null,
+    globalMarginPct: null,
     salesRepId: 2,
     deliveryTimeId: 1,
     version: 1,
@@ -954,6 +956,7 @@ export const seedOffers: Offer[] = [
     status: 'WYSLANA',
     rabatType: null,
     rabatValue: null,
+    globalMarginPct: null,
     salesRepId: 2,
     deliveryTimeId: 2,
     version: 1,
@@ -986,5 +989,17 @@ export const seedOfferLines: OfferLine[] = [
     kosztWykonania: 2500,
     negocjacje: 0,
     cenaSprzedazy: 3000,
+  },
+];
+
+/** Sent offer #2 already has revision A matching its working copy. */
+export const seedOfferRevisions: OfferRevision[] = [
+  {
+    id: 1,
+    offerId: 2,
+    revision: 'A',
+    snapshot: captureSnapshot(seedOffers[1], [seedOfferLines[1]]),
+    createdBy: 2,
+    createdAt: '2026-05-18T11:00:00Z',
   },
 ];
