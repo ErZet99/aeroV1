@@ -141,7 +141,8 @@ export async function setSupplierOffers(nodeId: number, offers: SupplierOffer[])
 
   node.supplierOffers = limited;
   const finalOffer = limited.find(o => o.isFinal);
-  if (finalOffer) {
+  // Only promote to MANUAL when a real final price exists (preseed cena:0 stays ROLLUP).
+  if (finalOffer && finalOffer.cena > 0) {
     node.costSource = 'MANUAL';
     node.unitCost = round2(finalOffer.cena);
   }

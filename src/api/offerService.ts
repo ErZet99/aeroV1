@@ -52,24 +52,7 @@ export async function get(id: number, role?: string): Promise<{ offer: Offer; li
 
   let lines = db.offerLines.filter(l => l.offerId === id);
 
-  if (offer.status === 'SZKIC') {
-    lines = lines.map(line => {
-      let bomNode =
-        line.sourceBomNodeId != null
-          ? db.bomNodes.find(n => n.id === line.sourceBomNodeId)
-          : undefined;
-      if (!bomNode && line.sourceRfqId !== null) {
-        bomNode = db.bomNodes.find(
-          n => n.rfqId === line.sourceRfqId && n.parentId === null
-        );
-      }
-      if (bomNode) {
-        return { ...line, kosztWykonania: bomNode.totalCost };
-      }
-      return line;
-    });
-  }
-
+  // Snapshot frozen at create — later inquiry edits do not rewrite line costs.
   const lineDtos = lines.map(line => {
     const wartosc = round2((line.cenaSprzedazy + line.negocjacje) * line.ilosc);
     const zysk = round2((line.cenaSprzedazy + line.negocjacje - line.kosztWykonania) * line.ilosc);

@@ -155,8 +155,8 @@ export interface OfferLine {
   ilosc: number;
   sourceRfqId: number | null;   // provenance while SZKIC (live cost); kept after freeze but no longer read
   sourceBomNodeId: number | null; // id of the root BomNode this line snapshots (null on legacy lines)
-  kosztWykonania: number;       // unit cost. LIVE while SZKIC, FROZEN on finalize
-  negocjacje: number;           // TODO(PRD-7.3): amount adjustment added to unit price
+  kosztWykonania: number;       // unit cost frozen from BOM root at line create / refresh
+  negocjacje: number;
   cenaSprzedazy: number;        // unit sale price, user-entered
 }
 

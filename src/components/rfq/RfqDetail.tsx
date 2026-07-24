@@ -10,13 +10,20 @@ import { useTabsStore } from '@/stores/tabsStore';
 import { useAuthStore } from '@/stores/authStore';
 import { RFQ_STATUSES } from '@/types/enums';
 import type { RfqStatus } from '@/types/enums';
-import type { Client, DictItem, Entity, User } from '@/types/models';
+import type { BomNode, Client, DictItem, Entity, Offer, User } from '@/types/models';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Separator } from '@/components/ui/separator';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   Select,
   SelectContent,
@@ -68,7 +75,10 @@ export function RfqDetail({ rfqId }: RfqDetailProps) {
   const [inquiryTypes, setInquiryTypes] = useState<DictItem[]>([]);
   const [certificates, setCertificates] = useState<DictItem[]>([]);
   const [users, setUsers] = useState<User[]>([]);
-  const [hasBom, setHasBom] = useState(false);
+  const [bomRoots, setBomRoots] = useState<BomNode[]>([]);
+  const [existingOffer, setExistingOffer] = useState<Offer | null>(null);
+  const [pickOpen, setPickOpen] = useState(false);
+  const [selectedRootIds, setSelectedRootIds] = useState<number[]>([]);
 
   const [nazwa, setNazwa] = useState('');
   const [opis, setOpis] = useState('');
@@ -83,7 +93,7 @@ export function RfqDetail({ rfqId }: RfqDetailProps) {
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
-    const [rfqData, clientData, entityData, inquiryTypeData, certificateData, bomNodes] =
+    const [rfqData, clientData, entityData, inquiryTypeData, certificateData, bomNodes, offer] =
       await Promise.all([
         rfqService.get(rfqId),
         dictionaryService.list('clients'),
@@ -91,6 +101,7 @@ export function RfqDetail({ rfqId }: RfqDetailProps) {
         dictionaryService.list('inquiryTypes'),
         dictionaryService.list('certificates'),
         bomService.getTree('rfq', rfqId),
+        offerService.findByRfqId(rfqId),
       ]);
 
     setClients(clientData as Client[]);
@@ -98,7 +109,8 @@ export function RfqDetail({ rfqId }: RfqDetailProps) {
     setInquiryTypes(inquiryTypeData as DictItem[]);
     setCertificates(certificateData as DictItem[]);
     setUsers(getDb().users.filter(u => u.active));
-    setHasBom(bomNodes.length > 0);
+    setBomRoots(bomNodes.filter(n => n.parentId === null).sort((a, b) => a.lp - b.lp));
+    setExistingOffer(offer);
 
     if (rfqData) {
       setRfq(rfqData);
@@ -145,14 +157,28 @@ export function RfqDetail({ rfqId }: RfqDetailProps) {
     }
   }
 
+  function openCreateOfferDialog() {
+    setSelectedRootIds(bomRoots.map(r => r.id));
+    setPickOpen(true);
+  }
+
+  function toggleRoot(id: number, checked: boolean) {
+    setSelectedRootIds(ids => (checked ? [...ids, id] : ids.filter(i => i !== id)));
+  }
+
   async function handleCreateOffer() {
-    const offer = await offerService.createFromRfq(rfqId, currentUser.id);
+    if (selectedRootIds.length === 0 || !currentUser) return;
+    const offer = await offerService.createFromRfq(rfqId, currentUser.id, selectedRootIds);
+    setPickOpen(false);
     openTab({ type: 'offer', entityId: offer.id, title: offer.numer });
+    await load();
   }
 
   if (!rfq) {
     return <div className="p-8 text-muted-foreground">…</div>;
   }
+
+  const hasBom = bomRoots.length > 0;
 
   return (
     <div className="flex max-w-2xl flex-col gap-4 p-4">
@@ -171,24 +197,54 @@ export function RfqDetail({ rfqId }: RfqDetailProps) {
           >
             {t('rfq.wycenaBom')}
           </Button>
-          <Button
-            variant="outline"
-            disabled={!hasBom}
-            title={!hasBom ? t('rfq.brakBom') : undefined}
-            onClick={() => void handleCreateOffer()}
-          >
-            {t('rfq.utworzOferte')}
-          </Button>
+          {existingOffer ? (
+            <Button
+              variant="outline"
+              onClick={() =>
+                openTab({
+                  type: 'offer',
+                  entityId: existingOffer.id,
+                  title: existingOffer.numer,
+                })
+              }
+            >
+              {t('rfq.otworzOferte', { numer: existingOffer.numer })}
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              disabled={!hasBom}
+              title={!hasBom ? t('rfq.brakBom') : undefined}
+              onClick={openCreateOfferDialog}
+            >
+              {t('rfq.utworzOferte')}
+            </Button>
+          )}
         </div>
       </div>
 
-      <div className="flex gap-6 text-sm text-muted-foreground">
+      <div className="flex flex-wrap gap-6 text-sm text-muted-foreground">
         <span>
           {t('rfq.dataZapytania')}: {rfq.dataZapytania}
         </span>
         <span>
           {t('rfq.dataWyslania')}: {rfq.dataWyslania ?? '—'}
         </span>
+        {existingOffer && (
+          <button
+            type="button"
+            className="text-primary underline-offset-2 hover:underline"
+            onClick={() =>
+              openTab({
+                type: 'offer',
+                entityId: existingOffer.id,
+                title: existingOffer.numer,
+              })
+            }
+          >
+            {t('rfq.linkOferta', { numer: existingOffer.numer })}
+          </button>
+        )}
       </div>
 
       <Separator />
@@ -287,6 +343,38 @@ export function RfqDetail({ rfqId }: RfqDetailProps) {
           {t('common.save')}
         </Button>
       </div>
+
+      <Dialog open={pickOpen} onOpenChange={setPickOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('rfq.wybierzProdukty')}</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-2">
+            {bomRoots.map(root => (
+              <label key={root.id} className="flex items-center gap-2 text-sm">
+                <Checkbox
+                  checked={selectedRootIds.includes(root.id)}
+                  onCheckedChange={(checked) => toggleRoot(root.id, Boolean(checked))}
+                />
+                <span>
+                  {root.lp}. {root.nazwaOpis || root.numerDetalu}
+                </span>
+              </label>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPickOpen(false)}>
+              {t('common.cancel')}
+            </Button>
+            <Button
+              disabled={selectedRootIds.length === 0}
+              onClick={() => void handleCreateOffer()}
+            >
+              {t('rfq.utworzOferte')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

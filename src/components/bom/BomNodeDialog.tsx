@@ -204,24 +204,19 @@ export function BomNodeDialog({
       if (node) {
         await bomService.updateNode(node.id, {
           ...common,
-          ...(groupType === 'ZAKUPOWA' && supplierOffers.length > 0
-            ? { supplierOffers }
-            : {}),
+          ...(groupType === 'ZAKUPOWA' ? { supplierOffers } : {}),
         });
-        if (groupType === 'ZAKUPOWA' && supplierOffers.length > 0) {
+        if (groupType === 'ZAKUPOWA' && supplierOffers.some(o => o.isFinal && o.cena > 0)) {
           await bomService.setSupplierOffers(node.id, supplierOffers);
         }
       } else {
-        const created = await bomService.addNode({
+        await bomService.addNode({
           ownerType,
           ownerId,
           parentId,
           ...common,
           supplierOffers: groupType === 'ZAKUPOWA' ? supplierOffers : [],
         });
-        if (groupType === 'ZAKUPOWA' && supplierOffers.some(o => o.isFinal)) {
-          await bomService.setSupplierOffers(created.id, supplierOffers);
-        }
       }
       onOpenChange(false);
       onSaved();
