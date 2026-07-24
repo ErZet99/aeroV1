@@ -1,0 +1,207 @@
+import type {
+  User, Entity, Client, Supplier, DictItem, Holiday, Rfq, BomNode, Template, Offer, OfferLine,
+  ComponentGroup, ComponentKind, Operation, ComponentKindSupplier,
+} from '@/types/models';
+import {
+  seedUsers,
+  seedEntities,
+  seedClients,
+  seedSuppliers,
+  seedInquiryTypes,
+  seedMaterials,
+  seedCertificates,
+  seedDeliveryTimes,
+  seedHolidays,
+  seedRfqs,
+  seedBomNodes,
+  seedTemplates,
+  seedOffers,
+  seedOfferLines,
+  seedComponentGroups,
+  seedComponentKinds,
+  seedOperations,
+  seedComponentKindSuppliers,
+} from './seed';
+import { recalcTree } from '@/services/costService';
+
+export interface Db {
+  users: User[];
+  entities: Entity[];
+  clients: Client[];
+  suppliers: Supplier[];
+  componentGroups: ComponentGroup[];
+  componentKinds: ComponentKind[];
+  operations: Operation[];
+  componentKindSuppliers: ComponentKindSupplier[];
+  inquiryTypes: DictItem[];
+  materials: DictItem[];
+  certificates: DictItem[];
+  deliveryTimes: DictItem[];
+  holidays: Holiday[];
+  rfqs: Rfq[];
+  bomNodes: BomNode[];
+  templates: Template[];
+  offers: Offer[];
+  offerLines: OfferLine[];
+  counters: Record<string, number>;
+}
+
+export class ConflictError extends Error {
+  current: unknown;
+
+  constructor(current: unknown) {
+    super('Version conflict');
+    this.current = current;
+  }
+}
+
+const DB_KEY = 'aero-erp-db-v3';
+
+function createInitialDb(): Db {
+  const bomNodes = JSON.parse(JSON.stringify(seedBomNodes)) as BomNode[];
+
+  const rfqIds = new Set<number>();
+  const templateIds = new Set<number>();
+
+  bomNodes.forEach(node => {
+    if (node.rfqId !== null) rfqIds.add(node.rfqId);
+    if (node.templateId !== null) templateIds.add(node.templateId);
+  });
+
+  rfqIds.forEach(rfqId => {
+    const ownerNodes = bomNodes.filter(n => n.rfqId === rfqId);
+    const recalced = recalcTree(ownerNodes);
+    recalced.forEach(n => {
+      const idx = bomNodes.findIndex(bn => bn.id === n.id);
+      if (idx >= 0) bomNodes[idx] = n;
+    });
+  });
+
+  templateIds.forEach(templateId => {
+    const ownerNodes = bomNodes.filter(n => n.templateId === templateId);
+    const recalced = recalcTree(ownerNodes);
+    recalced.forEach(n => {
+      const idx = bomNodes.findIndex(bn => bn.id === n.id);
+      if (idx >= 0) bomNodes[idx] = n;
+    });
+  });
+
+  return {
+    users: JSON.parse(JSON.stringify(seedUsers)),
+    entities: JSON.parse(JSON.stringify(seedEntities)),
+    clients: JSON.parse(JSON.stringify(seedClients)),
+    suppliers: JSON.parse(JSON.stringify(seedSuppliers)),
+    componentGroups: JSON.parse(JSON.stringify(seedComponentGroups)),
+    componentKinds: JSON.parse(JSON.stringify(seedComponentKinds)),
+    operations: JSON.parse(JSON.stringify(seedOperations)),
+    componentKindSuppliers: JSON.parse(JSON.stringify(seedComponentKindSuppliers)),
+    inquiryTypes: JSON.parse(JSON.stringify(seedInquiryTypes)),
+    materials: JSON.parse(JSON.stringify(seedMaterials)),
+    certificates: JSON.parse(JSON.stringify(seedCertificates)),
+    deliveryTimes: JSON.parse(JSON.stringify(seedDeliveryTimes)),
+    holidays: JSON.parse(JSON.stringify(seedHolidays)),
+    rfqs: JSON.parse(JSON.stringify(seedRfqs)),
+    bomNodes,
+    templates: JSON.parse(JSON.stringify(seedTemplates)),
+    offers: JSON.parse(JSON.stringify(seedOffers)),
+    offerLines: JSON.parse(JSON.stringify(seedOfferLines)),
+    counters: {
+      users: 4,
+      entities: 3,
+      clients: 7,
+      suppliers: 30,
+      componentGroups: 6,
+      componentKinds: 53,
+      operations: 69,
+      componentKindSuppliers: 37,
+      inquiryTypes: 6,
+      materials: 9,
+      certificates: 5,
+      deliveryTimes: 9,
+      holidays: 9,
+      rfqs: 11,
+      bomNodes: 17,
+      templates: 3,
+      offers: 3,
+      offerLines: 3,
+    },
+  };
+}
+
+let db: Db | null = null;
+
+const memoryStore = new Map<string, string>();
+
+function storageGet(key: string): string | null {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage?.getItem) {
+      return localStorage.getItem(key);
+    }
+  } catch {
+    /* vitest / node without DOM storage */
+  }
+  return memoryStore.get(key) ?? null;
+}
+
+function storageSet(key: string, value: string): void {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage?.setItem) {
+      localStorage.setItem(key, value);
+      return;
+    }
+  } catch {
+    /* fall through */
+  }
+  memoryStore.set(key, value);
+}
+
+function storageRemove(key: string): void {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage?.removeItem) {
+      localStorage.removeItem(key);
+    }
+  } catch {
+    /* fall through */
+  }
+  memoryStore.delete(key);
+}
+
+export function getDb(): Db {
+  if (!db) {
+    const stored = storageGet(DB_KEY);
+    if (stored) {
+      db = JSON.parse(stored) as Db;
+    } else {
+      db = createInitialDb();
+      saveDb();
+    }
+  }
+  return db as Db;
+}
+
+export function saveDb(): void {
+  if (db) {
+    storageSet(DB_KEY, JSON.stringify(db));
+  }
+}
+
+export function nextId(collection: keyof Omit<Db, 'counters'>): number {
+  const database = getDb();
+  database.counters[collection] = (database.counters[collection] || 0) + 1;
+  saveDb();
+  return database.counters[collection];
+}
+
+/** Wipe persisted DB. Pass reload=true from UI; tests omit reload. */
+export function resetDb(reload = false): void {
+  storageRemove(DB_KEY);
+  storageRemove('aero-erp-db-v2');
+  db = null;
+  if (reload && typeof location !== 'undefined' && location.reload) {
+    location.reload();
+  }
+}
+
+export function delay(): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, 100));
+}
