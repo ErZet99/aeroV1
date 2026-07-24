@@ -277,14 +277,14 @@ export function BomTree({ ownerType, ownerId, title, onDirtyChange }: BomTreePro
         header: t('bom.grupa'),
         cell: info => {
           const id = info.getValue();
-          return id !== null ? (labelMaps.groups.get(id) ?? '—') : t('bom.none');
+          return id !== null ? (labelMaps.groups.get(id) ?? t('bom.none')) : t('bom.none');
         },
       }),
       columnHelper.accessor('kindId', {
         header: t('bom.rodzaj'),
         cell: info => {
           const id = info.getValue();
-          return id !== null ? (labelMaps.kinds.get(id) ?? '—') : t('bom.none');
+          return id !== null ? (labelMaps.kinds.get(id) ?? t('bom.none')) : t('bom.none');
         },
       }),
       columnHelper.accessor('operations', {

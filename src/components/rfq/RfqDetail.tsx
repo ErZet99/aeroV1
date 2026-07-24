@@ -246,7 +246,7 @@ export function RfqDetail({ rfqId }: RfqDetailProps) {
   async function openCreateOfferDialog() {
     const wycenaDirty = useTabsStore.getState().tabs.find(tab => tab.id === wycenaTabId(rfqId))?.dirty;
     if (wycenaDirty) {
-      window.alert(t('bom.saveFirst'));
+      if (!window.confirm(t('bom.saveFirst'))) return;
       openWycena();
       return;
     }

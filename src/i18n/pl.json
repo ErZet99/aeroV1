@@ -155,7 +155,7 @@
     "emptyTree": "Brak pozycji — dodaj pierwszy produkt główny",
     "productPillLabel": "Produkt",
     "pozycjeCount": "{{count}} pozycji",
-    "saveFirst": "Wycena ma niezapisane zmiany. Zapisz wycenę przed utworzeniem oferty."
+    "saveFirst": "Wycena ma niezapisane zmiany. Otworzyć wycenę, żeby zapisać przed utworzeniem oferty?"
   },
   "templates": {
     "name": "Nazwa",
