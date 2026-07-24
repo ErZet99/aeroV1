@@ -25,7 +25,7 @@ export function leanRootFields(input: {
   manualUnitCost: number | null;
 }): Omit<
   BomNode,
-  'id' | 'rfqId' | 'templateId' | 'parentId' | 'lp' | 'ownCost' | 'unitCost' | 'totalCost' | 'version'
+  'id' | 'rfqId' | 'templateId' | 'orderId' | 'parentId' | 'lp' | 'ownCost' | 'unitCost' | 'totalCost' | 'version'
 > {
   return {
     numerDetalu: input.numerDetalu,
@@ -63,6 +63,13 @@ export function activeCardSubtree(nodes: BomNode[], activeRootId: number | null)
       });
   }
   return result;
+}
+
+/** Root node plus every descendant, root first. */
+export function nodeSubtree(nodes: BomNode[], rootId: number): BomNode[] {
+  const root = nodes.find(n => n.id === rootId);
+  if (!root) return [];
+  return [root, ...activeCardSubtree(nodes, rootId)];
 }
 
 export type BomRowGesture = 'click' | 'dblclick';

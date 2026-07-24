@@ -1,16 +1,14 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { MoreHorizontalIcon } from 'lucide-react';
 import * as offerService from '@/api/offerService';
 import type { OfferLineDTO } from '@/api/offerService';
 import * as dictionaryService from '@/api/dictionaryService';
 import { getDb } from '@/api/db';
 import { useAuthStore } from '@/stores/authStore';
 import { useTabsStore } from '@/stores/tabsStore';
-import type { OfferStatus, RabatType } from '@/types/enums';
+import type { OfferStatus } from '@/types/enums';
 import type { Client, Entity, Offer, OfferRevision, User } from '@/types/models';
 import {
-  applyMarginToLines,
   buildOfferPdfHtml,
   captureSnapshot,
   offerSummary,
@@ -22,12 +20,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import {
   Dialog,
   DialogContent,
@@ -43,17 +35,19 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { DocumentActionBar } from '@/components/layout/DocumentActionBar';
-import { OfferLines } from './OfferLines';
+import { OfferLines, type EditableLineField } from './OfferLines';
 import { OfferSummaryPanel } from './OfferSummaryPanel';
 import { RevisionsPanel } from './RevisionsPanel';
 import { OfferPdfDialog, type PdfSource } from './OfferPdfDialog';
 import { OFFER_STATUS_BADGE } from './OfferGrid';
+import { OrderCreateDialog } from '@/components/order/OrderCreateDialog';
 
 interface OfferDetailProps {
   offerId: number;
 }
 
 const LEGAL_MOVES: Partial<Record<OfferStatus, OfferStatus[]>> = {
+  SZKIC: ['WYSLANA'],
   WYSLANA: ['ZAAKCEPTOWANA', 'ODRZUCONA', 'WSTRZYMANA'],
 };
 
@@ -70,10 +64,17 @@ const LEGAL_CLAUSES = {
   ],
 } as const;
 
+/** Client-only ids for lines not yet persisted (manual adds / branched revisions). */
+let tempCounter = 0;
+function nextTempId(): number {
+  tempCounter -= 1;
+  return tempCounter;
+}
+
 function enrichLines(lines: OfferLineDTO[], role: string): OfferLineDTO[] {
   return lines.map(line => {
-    const wartosc = round2((line.cenaSprzedazy + line.negocjacje) * line.ilosc);
-    const zysk = round2((line.cenaSprzedazy + line.negocjacje - line.kosztWykonania) * line.ilosc);
+    const wartosc = round2((line.cenaSprzedazy - line.rabat) * line.ilosc);
+    const zysk = round2((line.cenaSprzedazy - line.rabat - line.kosztWykonania) * line.ilosc);
     const marza = wartosc > 0 ? round2((zysk / wartosc) * 100) : 0;
     const dto: OfferLineDTO = { ...line, wartosc };
     if (role !== 'PRACOWNIK') {
@@ -90,49 +91,41 @@ function enrichLines(lines: OfferLineDTO[], role: string): OfferLineDTO[] {
 function draftSnapshot(
   offer: Offer,
   nrZamowienia: string,
-  rabatType: RabatType | null,
-  rabatValue: number | null,
-  globalMarginPct: number | null,
+  rabatOgolny: number,
   lines: OfferLineDTO[]
 ): OfferDocumentSnapshot {
   return captureSnapshot(
     {
       ...offer,
       nrZamowieniaKlienta: nrZamowienia.trim() === '' ? null : nrZamowienia.trim(),
-      rabatType,
-      rabatValue,
-      globalMarginPct,
+      rabatType: rabatOgolny > 0 ? 'KWOTA' : null,
+      rabatValue: rabatOgolny > 0 ? rabatOgolny : null,
     },
-    lines.map(l => ({
+    lines.map((l, index) => ({
       id: l.id,
       offerId: l.offerId,
-      lp: l.lp,
+      lp: index + 1,
       nazwaPrzyrzadu: l.nazwaPrzyrzadu,
       ilosc: l.ilosc,
       sourceRfqId: l.sourceRfqId,
       sourceBomNodeId: l.sourceBomNodeId,
       kosztWykonania: l.kosztWykonania,
-      negocjacje: l.negocjacje,
+      rabat: l.rabat,
       cenaSprzedazy: l.cenaSprzedazy,
     }))
   );
 }
 
-function draftKey(
-  nr: string,
-  rabatType: RabatType | null,
-  rabatValue: number | null,
-  margin: number | null,
-  lines: OfferLineDTO[]
-): string {
+function draftKey(nr: string, rabatOgolny: number, lines: OfferLineDTO[]): string {
   return JSON.stringify({
     nr,
-    rabatType,
-    rabatValue,
-    margin,
-    lines: lines.map(l => ({
-      id: l.id,
-      negocjacje: l.negocjacje,
+    rabatOgolny,
+    lines: lines.map((l, index) => ({
+      lp: index + 1,
+      nazwaPrzyrzadu: l.nazwaPrzyrzadu,
+      ilosc: l.ilosc,
+      kosztWykonania: l.kosztWykonania,
+      rabat: l.rabat,
       cenaSprzedazy: l.cenaSprzedazy,
     })),
   });
@@ -143,6 +136,7 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
   const role = useAuthStore(s => s.currentUser.role);
   const currentUserId = useAuthStore(s => s.currentUser.id);
   const setTabDirty = useTabsStore(s => s.setTabDirty);
+  const openTab = useTabsStore(s => s.openTab);
   const tabId = `offer:${offerId}::`;
 
   const [offer, setOffer] = useState<Offer | null>(null);
@@ -153,21 +147,18 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
   const [users, setUsers] = useState<User[]>([]);
   const [revisions, setRevisions] = useState<OfferRevision[]>([]);
   const [nrZamowienia, setNrZamowienia] = useState('');
-  const [rabatType, setRabatType] = useState<RabatType | null>(null);
-  const [rabatValue, setRabatValue] = useState<number | null>(null);
-  const [globalMarginPct, setGlobalMarginPct] = useState<number | null>(null);
+  const [rabatOgolny, setRabatOgolny] = useState(0);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const [pdfOpen, setPdfOpen] = useState(false);
   const [pdfInitial, setPdfInitial] = useState<PdfSource | undefined>();
   const [viewRevision, setViewRevision] = useState<OfferRevision | null>(null);
   const [upToDateRevision, setUpToDateRevision] = useState(false);
+  const [orderCreateRevisionId, setOrderCreateRevisionId] = useState<number | null>(null);
 
   const dirty = useMemo(
-    () =>
-      committedKey !== '' &&
-      draftKey(nrZamowienia, rabatType, rabatValue, globalMarginPct, lines) !== committedKey,
-    [committedKey, nrZamowienia, rabatType, rabatValue, globalMarginPct, lines]
+    () => committedKey !== '' && draftKey(nrZamowienia, rabatOgolny, lines) !== committedKey,
+    [committedKey, nrZamowienia, rabatOgolny, lines]
   );
 
   useEffect(() => {
@@ -178,21 +169,12 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
     (detail: { offer: Offer; lines: OfferLineDTO[] }, revs: OfferRevision[]) => {
       const enriched = enrichLines(detail.lines, role);
       const nr = detail.offer.nrZamowieniaKlienta ?? '';
+      const rabat = detail.offer.rabatValue ?? 0;
       setOffer(detail.offer);
       setLines(enriched);
       setNrZamowienia(nr);
-      setRabatType(detail.offer.rabatType);
-      setRabatValue(detail.offer.rabatValue);
-      setGlobalMarginPct(detail.offer.globalMarginPct);
-      setCommittedKey(
-        draftKey(
-          nr,
-          detail.offer.rabatType,
-          detail.offer.rabatValue,
-          detail.offer.globalMarginPct,
-          enriched
-        )
-      );
+      setRabatOgolny(rabat);
+      setCommittedKey(draftKey(nr, rabat, enriched));
       setRevisions(revs);
       setUpToDateRevision(offerService.hasUpToDateRevision(detail.offer.id));
     },
@@ -217,17 +199,55 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
   }, [load]);
 
   const summary = useMemo(
-    () => offerSummary(lines, rabatType, rabatValue),
-    [lines, rabatType, rabatValue]
+    () => offerSummary(lines, 'KWOTA', rabatOgolny),
+    [lines, rabatOgolny]
   );
 
   const showMargin = role !== 'PRACOWNIK';
 
-  const handleLineChange = useCallback(
-    (lineId: number, field: 'negocjacje' | 'cenaSprzedazy', value: number) => {
+  const handleFieldChange = useCallback(
+    (lineId: number, field: EditableLineField, value: number | string) => {
       setLines(prev =>
         enrichLines(
           prev.map(l => (l.id === lineId ? { ...l, [field]: value } : l)),
+          role
+        )
+      );
+    },
+    [role]
+  );
+
+  const handleAddLine = useCallback(() => {
+    if (!offer) return;
+    setLines(prev =>
+      enrichLines(
+        [
+          ...prev,
+          {
+            id: nextTempId(),
+            offerId: offer.id,
+            lp: prev.length + 1,
+            nazwaPrzyrzadu: '',
+            ilosc: 1,
+            sourceRfqId: null,
+            sourceBomNodeId: null,
+            kosztWykonania: 0,
+            rabat: 0,
+            cenaSprzedazy: 0,
+          },
+        ],
+        role
+      )
+    );
+  }, [offer, role]);
+
+  const handleRemoveLine = useCallback(
+    (lineId: number) => {
+      setLines(prev =>
+        enrichLines(
+          prev
+            .filter(l => l.id !== lineId)
+            .map((l, index) => ({ ...l, lp: index + 1 })),
           role
         )
       );
@@ -241,12 +261,15 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
     try {
       await offerService.saveWorkingCopy(offer.id, {
         nrZamowieniaKlienta: nrZamowienia.trim() === '' ? null : nrZamowienia.trim(),
-        rabatType,
-        rabatValue,
-        globalMarginPct,
-        lines: lines.map(l => ({
-          id: l.id,
-          negocjacje: l.negocjacje,
+        rabatType: rabatOgolny > 0 ? 'KWOTA' : null,
+        rabatValue: rabatOgolny > 0 ? rabatOgolny : null,
+        lines: lines.map((l, index) => ({
+          id: l.id < 0 ? null : l.id,
+          lp: index + 1,
+          nazwaPrzyrzadu: l.nazwaPrzyrzadu,
+          ilosc: l.ilosc,
+          kosztWykonania: l.kosztWykonania,
+          rabat: l.rabat,
           cenaSprzedazy: l.cenaSprzedazy,
         })),
       });
@@ -266,7 +289,7 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
     await persistWorkingCopy();
   }
 
-  async function handleSaveAsRevision() {
+  async function handleCreateRevision() {
     if (!offer || saving) return;
     if (!window.confirm(t('offer.confirmSaveRevision'))) return;
     if (dirty) {
@@ -282,41 +305,28 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
     }
   }
 
-  async function handleStatusChange(status: string) {
-    if (!offer || status === offer.status) return;
-    if (dirty) {
-      if (!window.confirm(t('offer.saveFirst'))) return;
-      await persistWorkingCopy();
-    }
-    await offerService.update(offer.id, { status: status as OfferStatus });
-    await load();
-  }
-
-  function handleGlobalMargin() {
+  function handleCreateRevisionFrom(rev: OfferRevision) {
     if (!offer) return;
-    const raw = window.prompt(t('offer.globalMarginPrompt'), String(globalMarginPct ?? 20));
-    if (raw === null) return;
-    const pct = round2(Number(raw));
-    if (Number.isNaN(pct)) return;
-    if (!window.confirm(t('offer.confirmGlobalMargin', { pct }))) return;
-    setGlobalMarginPct(pct);
-    setLines(prev => enrichLines(applyMarginToLines(prev, pct), role));
-  }
-
-  function handleDiscount() {
-    if (!offer) return;
-    const typeRaw = window.prompt(t('offer.rabatTypePrompt'), rabatType ?? 'PROCENT');
-    if (typeRaw === null) return;
-    const type = typeRaw.toUpperCase() === 'KWOTA' ? 'KWOTA' : 'PROCENT';
-    const valueRaw = window.prompt(
-      t('offer.rabatValuePrompt'),
-      String(rabatValue ?? (type === 'PROCENT' ? 10 : 0))
+    setNrZamowienia(rev.snapshot.nrZamowieniaKlienta ?? '');
+    setRabatOgolny(rev.snapshot.rabatValue ?? 0);
+    setLines(
+      enrichLines(
+        rev.snapshot.lines.map(l => ({
+          id: nextTempId(),
+          offerId: offer.id,
+          lp: l.lp,
+          nazwaPrzyrzadu: l.nazwaPrzyrzadu,
+          ilosc: l.ilosc,
+          sourceRfqId: l.sourceRfqId,
+          sourceBomNodeId: l.sourceBomNodeId,
+          kosztWykonania: l.kosztWykonania,
+          rabat: l.rabat,
+          cenaSprzedazy: l.cenaSprzedazy,
+        })),
+        role
+      )
     );
-    if (valueRaw === null) return;
-    const value = round2(Number(valueRaw) || 0);
-    if (!window.confirm(t('offer.confirmRabat', { type, value }))) return;
-    setRabatType(type);
-    setRabatValue(value);
+    setViewRevision(null);
   }
 
   async function handleMarkSent() {
@@ -338,6 +348,20 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
     }
   }
 
+  async function handleStatusChange(status: string) {
+    if (!offer || status === offer.status) return;
+    if (offer.status === 'SZKIC' && status === 'WYSLANA') {
+      await handleMarkSent();
+      return;
+    }
+    if (dirty) {
+      if (!window.confirm(t('offer.saveFirst'))) return;
+      await persistWorkingCopy();
+    }
+    await offerService.update(offer.id, { status: status as OfferStatus });
+    await load();
+  }
+
   function openPdf(source?: PdfSource) {
     setPdfInitial(source);
     setPdfOpen(true);
@@ -353,8 +377,8 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
       lp: l.lp,
       nazwa: l.nazwaPrzyrzadu,
       ilosc: l.ilosc,
-      cena: l.cenaSprzedazy + l.negocjacje,
-      wartosc: round2((l.cenaSprzedazy + l.negocjacje) * l.ilosc),
+      cena: round2(l.cenaSprzedazy - l.rabat),
+      wartosc: round2((l.cenaSprzedazy - l.rabat) * l.ilosc),
     }));
     const sum = offerSummary(snapshot.lines, snapshot.rabatType, snapshot.rabatValue);
     const now = new Date();
@@ -410,14 +434,7 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
       return;
     }
 
-    const workingSnapshot = draftSnapshot(
-      offer,
-      nrZamowienia,
-      rabatType,
-      rabatValue,
-      globalMarginPct,
-      lines
-    );
+    const workingSnapshot = draftSnapshot(offer, nrZamowienia, rabatOgolny, lines);
     printFromSnapshot(language, workingSnapshot, offer.revision, {
       entity,
       client,
@@ -432,7 +449,6 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
 
   const badge = OFFER_STATUS_BADGE[offer.status];
   const legalMoves = LEGAL_MOVES[offer.status] ?? [];
-  const isSzkic = offer.status === 'SZKIC';
   const clientName = clients.find(c => c.id === offer.clientId)?.name ?? '';
   const entityName = entities.find(en => en.id === offer.entityId)?.name ?? '';
   const revisionIndicator =
@@ -457,32 +473,16 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
 
   const secondaryActions = (
     <>
-      <Button variant="outline" disabled={saving} onClick={() => void handleSaveAsRevision()}>
-        {t('offer.saveAsRevision')}
+      <Button
+        variant="outline"
+        disabled={saving || (!dirty && upToDateRevision)}
+        onClick={() => void handleCreateRevision()}
+      >
+        {t('offer.createRevision')}
       </Button>
       <Button variant="outline" onClick={() => openPdf({ type: 'working' })}>
         {t('offer.generatePdf')}
       </Button>
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          render={
-            <Button variant="outline" size="icon" aria-label={t('offer.moreActions')} />
-          }
-        >
-          <MoreHorizontalIcon />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          {showMargin && (
-            <DropdownMenuItem onClick={handleGlobalMargin}>{t('offer.globalMargin')}</DropdownMenuItem>
-          )}
-          <DropdownMenuItem onClick={handleDiscount}>{t('offer.rabat')}</DropdownMenuItem>
-          {isSzkic && (
-            <DropdownMenuItem onClick={() => void handleMarkSent()}>
-              {t('offer.markSent')}
-            </DropdownMenuItem>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
     </>
   );
 
@@ -554,9 +554,19 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
 
         <Separator />
 
-        <OfferLines lines={lines} onLineChange={handleLineChange} />
+        <OfferLines
+          lines={lines}
+          onFieldChange={handleFieldChange}
+          onAddLine={handleAddLine}
+          onRemoveLine={handleRemoveLine}
+        />
 
-        <OfferSummaryPanel summary={summary} showMargin={showMargin} />
+        <OfferSummaryPanel
+          summary={summary}
+          showMargin={showMargin}
+          rabatOgolny={rabatOgolny}
+          onRabatOgolnyChange={setRabatOgolny}
+        />
 
         <Separator />
 
@@ -568,6 +578,8 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
           }}
           onView={setViewRevision}
           onPdf={(rev) => openPdf({ type: 'revision', revisionId: rev.id })}
+          onCreateFrom={handleCreateRevisionFrom}
+          onCreateOrder={(rev) => setOrderCreateRevisionId(rev.id)}
         />
       </div>
 
@@ -580,6 +592,18 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
         onGenerate={handleGeneratePdf}
       />
 
+      <OrderCreateDialog
+        open={orderCreateRevisionId !== null}
+        onOpenChange={(open) => {
+          if (!open) setOrderCreateRevisionId(null);
+        }}
+        preselectedRevisionId={orderCreateRevisionId}
+        onCreated={(order) => {
+          setOrderCreateRevisionId(null);
+          void load();
+          openTab({ type: 'order', entityId: order.id, title: order.numer });
+        }}
+      />
       <Dialog open={viewRevision !== null} onOpenChange={(o) => !o && setViewRevision(null)}>
         <DialogContent className="max-w-4xl">
           <DialogHeader>
@@ -589,7 +613,7 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
           </DialogHeader>
           {viewRevision && (
             <div className="max-h-[70vh] overflow-y-auto">
-              <OfferLines lines={viewLines} readOnly onLineChange={() => undefined} />
+              <OfferLines lines={viewLines} readOnly />
               <OfferSummaryPanel
                 summary={offerSummary(
                   viewRevision.snapshot.lines,
@@ -597,10 +621,18 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
                   viewRevision.snapshot.rabatValue
                 )}
                 showMargin={showMargin}
+                rabatOgolny={viewRevision.snapshot.rabatValue ?? 0}
+                readOnly
               />
             </div>
           )}
           <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => viewRevision && handleCreateRevisionFrom(viewRevision)}
+            >
+              {t('offer.createRevisionFrom')}
+            </Button>
             <Button variant="outline" onClick={() => setViewRevision(null)}>
               {t('common.close')}
             </Button>

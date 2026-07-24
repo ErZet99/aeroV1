@@ -1,4 +1,4 @@
-import type { Role, RfqStatus, OfferStatus, RabatType, GroupType } from './enums';
+import type { Role, RfqStatus, OfferStatus, OrderStatus, RabatType, GroupType } from './enums';
 
 export interface DictItem {
   id: number;
@@ -129,6 +129,7 @@ export interface BomNode {
   id: number;
   rfqId: number | null;
   templateId: number | null;
+  orderId: number | null;
   parentId: number | null;
   lp: number;
   numerDetalu: string;
@@ -171,7 +172,8 @@ export interface OfferLine {
   sourceRfqId: number | null;
   sourceBomNodeId: number | null;
   kosztWykonania: number;
-  negocjacje: number;
+  /** Per-unit discount amount (PLN, ≥0). Manual lines edit cost too; BOM lines keep frozen cost. */
+  rabat: number;
   cenaSprzedazy: number;
 }
 
@@ -185,9 +187,9 @@ export interface Offer {
   clientId: number;
   nrZamowieniaKlienta: string | null;
   status: OfferStatus;
+  /** Whole-offer discount. Always 'KWOTA' in v1 UI (PROCENT reserved). */
   rabatType: RabatType | null;
   rabatValue: number | null;
-  globalMarginPct: number | null;
   salesRepId: number;
   deliveryTimeId: number | null;
   version: number;
@@ -195,7 +197,18 @@ export interface Offer {
   updatedAt: string;
 }
 
-/** Header + lines frozen inside an offer revision. */
+export interface OfferSnapshotLine {
+  lp: number;
+  nazwaPrzyrzadu: string;
+  ilosc: number;
+  sourceRfqId: number | null;
+  sourceBomNodeId: number | null;
+  kosztWykonania: number;
+  rabat: number;
+  cenaSprzedazy: number;
+}
+
+/** Commercial content of an offer document (header + lines), without BOM trees. */
 export interface OfferDocumentSnapshot {
   numer: string;
   entityId: number;
@@ -203,19 +216,34 @@ export interface OfferDocumentSnapshot {
   nrZamowieniaKlienta: string | null;
   rabatType: RabatType | null;
   rabatValue: number | null;
-  globalMarginPct: number | null;
   salesRepId: number;
   deliveryTimeId: number | null;
-  lines: Array<{
-    lp: number;
-    nazwaPrzyrzadu: string;
-    ilosc: number;
-    sourceRfqId: number | null;
-    sourceBomNodeId: number | null;
-    kosztWykonania: number;
-    negocjacje: number;
-    cenaSprzedazy: number;
-  }>;
+  lines: OfferSnapshotLine[];
+}
+
+/**
+ * What a revision freezes: commercial content plus each line's BOM tree copied at
+ * freeze time (`03-RULES.md` §3). Orders materialize their tree from here, so later
+ * quotation edits never reach an already-agreed revision.
+ */
+export interface OfferRevisionSnapshot extends Omit<OfferDocumentSnapshot, 'lines'> {
+  lines: Array<OfferSnapshotLine & { bomSnapshot: BomNode[] }>;
+}
+
+/** Pre-production deep copy of an offer revision (`01-DOMAIN.md` §1). */
+export interface Order {
+  id: number;
+  numer: string;
+  offerId: number;
+  offerRevisionId: number;
+  clientId: number;
+  entityId: number;
+  status: OrderStatus;
+  nazwa: string;
+  opis: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 /** Immutable frozen snapshot of an offer working copy. */
@@ -223,7 +251,7 @@ export interface OfferRevision {
   id: number;
   offerId: number;
   revision: string;
-  snapshot: OfferDocumentSnapshot;
+  snapshot: OfferRevisionSnapshot;
   createdBy: number;
   createdAt: string;
 }

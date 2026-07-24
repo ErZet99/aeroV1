@@ -1,6 +1,15 @@
 import { create } from 'zustand';
 
-export type TabType = 'rfq-list' | 'offer-list' | 'template-list' | 'dictionary' | 'rfq' | 'bom' | 'offer';
+export type TabType =
+  | 'rfq-list'
+  | 'offer-list'
+  | 'order-list'
+  | 'template-list'
+  | 'dictionary'
+  | 'rfq'
+  | 'bom'
+  | 'offer'
+  | 'order';
 
 export interface Tab {
   id: string;
@@ -8,7 +17,7 @@ export interface Tab {
   entityId?: number;
   dictKey?: string;
   /** For 'bom' tabs: whose tree it is. Defaults to 'rfq' when absent. */
-  ownerType?: 'rfq' | 'template';
+  ownerType?: 'rfq' | 'template' | 'order';
   title: string;
   dirty?: boolean;
 }

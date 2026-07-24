@@ -15,9 +15,18 @@ interface RevisionsPanelProps {
   userName: (userId: number) => string;
   onView: (revision: OfferRevision) => void;
   onPdf: (revision: OfferRevision) => void;
+  onCreateFrom: (revision: OfferRevision) => void;
+  onCreateOrder: (revision: OfferRevision) => void;
 }
 
-export function RevisionsPanel({ revisions, userName, onView, onPdf }: RevisionsPanelProps) {
+export function RevisionsPanel({
+  revisions,
+  userName,
+  onView,
+  onPdf,
+  onCreateFrom,
+  onCreateOrder,
+}: RevisionsPanelProps) {
   const { t } = useTranslation();
 
   return (
@@ -43,20 +52,18 @@ export function RevisionsPanel({ revisions, userName, onView, onPdf }: Revisions
                   <TableCell>{rev.createdAt.replace('T', ' ').slice(0, 16)}</TableCell>
                   <TableCell>{userName(rev.createdBy)}</TableCell>
                   <TableCell className="text-right">
-                    <div className="flex justify-end gap-1">
+                    <div className="flex flex-wrap justify-end gap-1">
                       <Button variant="ghost" size="sm" onClick={() => onView(rev)}>
                         {t('offer.viewRevision')}
                       </Button>
+                      <Button variant="ghost" size="sm" onClick={() => onCreateFrom(rev)}>
+                        {t('offer.createRevisionFrom')}
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => onCreateOrder(rev)}>
+                        {t('offer.createOrderFrom')}
+                      </Button>
                       <Button variant="ghost" size="sm" onClick={() => onPdf(rev)}>
                         {t('offer.generatePdf')}
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        disabled
-                        title={t('common.underConstruction')}
-                      >
-                        {t('offer.createOrderFromRevision')}
                       </Button>
                     </div>
                   </TableCell>

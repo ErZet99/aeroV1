@@ -35,6 +35,13 @@ export function Sidebar() {
         <Button
           variant="ghost"
           className="justify-start"
+          onClick={() => openTab({ type: 'order-list', title: t('sidebar.orders') })}
+        >
+          {t('sidebar.orders')}
+        </Button>
+        <Button
+          variant="ghost"
+          className="justify-start"
           onClick={() => openTab({ type: 'template-list', title: t('sidebar.templates') })}
         >
           {t('sidebar.templates')}

@@ -58,33 +58,109 @@ describe('offerService document save + revisions', () => {
 
     await offerService.saveWorkingCopy(1, {
       nrZamowieniaKlienta: 'PO-99',
-      rabatType: 'PROCENT',
-      rabatValue: 5,
-      globalMarginPct: null,
+      rabatType: 'KWOTA',
+      rabatValue: 200,
       lines: before!.lines.map(l => ({
         id: l.id,
-        negocjacje: 10,
+        lp: l.lp,
+        nazwaPrzyrzadu: l.nazwaPrzyrzadu,
+        ilosc: l.ilosc,
+        kosztWykonania: l.kosztWykonania,
+        rabat: 10,
         cenaSprzedazy: 1500,
       })),
     });
 
     const after = await offerService.get(1);
     expect(after!.offer.nrZamowieniaKlienta).toBe('PO-99');
-    expect(after!.offer.rabatType).toBe('PROCENT');
-    expect(after!.offer.rabatValue).toBe(5);
+    expect(after!.offer.rabatType).toBe('KWOTA');
+    expect(after!.offer.rabatValue).toBe(200);
     expect(after!.lines[0].cenaSprzedazy).toBe(1500);
-    expect(after!.lines[0].negocjacje).toBe(10);
+    expect(after!.lines[0].rabat).toBe(10);
     expect(after!.offer.revision).toBeNull();
     expect(await offerService.listRevisions(1)).toHaveLength(0);
   });
 
-  it('createRevision freezes A then B and leaves prior snapshot immutable', async () => {
+  it('saveWorkingCopy inserts a manual line (id null) and deletes omitted lines', async () => {
+    const before = await offerService.get(1);
+    const original = before!.lines[0];
+
+    // Add a manual line alongside the original.
     await offerService.saveWorkingCopy(1, {
       nrZamowieniaKlienta: null,
       rabatType: null,
       rabatValue: null,
-      globalMarginPct: null,
-      lines: [{ id: 1, negocjacje: 0, cenaSprzedazy: 1000 }],
+      lines: [
+        {
+          id: original.id,
+          lp: 1,
+          nazwaPrzyrzadu: original.nazwaPrzyrzadu,
+          ilosc: original.ilosc,
+          kosztWykonania: original.kosztWykonania,
+          rabat: 0,
+          cenaSprzedazy: original.cenaSprzedazy,
+        },
+        {
+          id: null,
+          lp: 2,
+          nazwaPrzyrzadu: 'Ręczna pozycja',
+          ilosc: 3,
+          kosztWykonania: 500,
+          rabat: 25,
+          cenaSprzedazy: 800,
+        },
+      ],
+    });
+
+    const withManual = await offerService.get(1);
+    expect(withManual!.lines).toHaveLength(2);
+    const manual = withManual!.lines[1];
+    expect(manual.nazwaPrzyrzadu).toBe('Ręczna pozycja');
+    expect(manual.sourceRfqId).toBeNull();
+    expect(manual.sourceBomNodeId).toBeNull();
+    // wartość = (800 - 25) * 3
+    expect(manual.wartosc).toBe(2325);
+
+    // Now drop the original line — only the manual one remains.
+    await offerService.saveWorkingCopy(1, {
+      nrZamowieniaKlienta: null,
+      rabatType: null,
+      rabatValue: null,
+      lines: [
+        {
+          id: manual.id,
+          lp: 1,
+          nazwaPrzyrzadu: manual.nazwaPrzyrzadu,
+          ilosc: manual.ilosc,
+          kosztWykonania: manual.kosztWykonania,
+          rabat: manual.rabat,
+          cenaSprzedazy: manual.cenaSprzedazy,
+        },
+      ],
+    });
+
+    const afterDelete = await offerService.get(1);
+    expect(afterDelete!.lines).toHaveLength(1);
+    expect(afterDelete!.lines[0].nazwaPrzyrzadu).toBe('Ręczna pozycja');
+  });
+
+  it('createRevision freezes A then B and leaves prior snapshot immutable', async () => {
+    const seedLine = (await offerService.get(1))!.lines[0];
+    const lineAt = (cena: number) => ({
+      id: seedLine.id,
+      lp: 1,
+      nazwaPrzyrzadu: seedLine.nazwaPrzyrzadu,
+      ilosc: seedLine.ilosc,
+      kosztWykonania: seedLine.kosztWykonania,
+      rabat: 0,
+      cenaSprzedazy: cena,
+    });
+
+    await offerService.saveWorkingCopy(1, {
+      nrZamowieniaKlienta: null,
+      rabatType: null,
+      rabatValue: null,
+      lines: [lineAt(1000)],
     });
 
     const revA = await offerService.createRevision(1, 2);
@@ -95,8 +171,7 @@ describe('offerService document save + revisions', () => {
       nrZamowieniaKlienta: null,
       rabatType: null,
       rabatValue: null,
-      globalMarginPct: null,
-      lines: [{ id: 1, negocjacje: 0, cenaSprzedazy: 2000 }],
+      lines: [lineAt(2000)],
     });
 
     const revB = await offerService.createRevision(1, 2);
@@ -111,15 +186,53 @@ describe('offerService document save + revisions', () => {
     expect(offer.revision).toBe('B');
   });
 
+  it('createRevision freezes each line BOM tree against later quotation edits', async () => {
+    const roots = (await bomService.getTree('rfq', 9)).filter(n => n.parentId === null);
+    const offer = await offerService.createFromRfq(9, 2, [roots[0].id]);
+
+    const rev = await offerService.createRevision(offer.id, 2);
+    const frozen = rev.snapshot.lines[0].bomSnapshot;
+    // Root 1 plus its descendants 17, 2, 3, 4 (RFQ 9 seed).
+    expect(frozen.map(n => n.id).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 17]);
+
+    await bomService.updateNode(roots[0].id, { nazwaOpis: 'Po zmianie technologa' });
+    await bomService.deleteNode(3);
+
+    const listed = await offerService.listRevisions(offer.id);
+    const stillFrozen = listed[0].snapshot.lines[0].bomSnapshot;
+    expect(stillFrozen.map(n => n.id).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 17]);
+    expect(stillFrozen.find(n => n.id === 1)!.nazwaOpis).toBe('Stół inspekcyjny');
+  });
+
+  it('hasUpToDateRevision ignores quotation tree edits (commercial content only)', async () => {
+    const roots = (await bomService.getTree('rfq', 9)).filter(n => n.parentId === null);
+    const offer = await offerService.createFromRfq(9, 2, [roots[0].id]);
+    await offerService.createRevision(offer.id, 2);
+    expect(offerService.hasUpToDateRevision(offer.id)).toBe(true);
+
+    await bomService.updateNode(roots[0].id, { nazwaOpis: 'Po zmianie technologa' });
+    expect(offerService.hasUpToDateRevision(offer.id)).toBe(true);
+  });
+
   it('hasUpToDateRevision is false when dirty, true after matching revision', async () => {
+    const seedLine = (await offerService.get(1))!.lines[0];
+    const lineAt = (cena: number) => ({
+      id: seedLine.id,
+      lp: 1,
+      nazwaPrzyrzadu: seedLine.nazwaPrzyrzadu,
+      ilosc: seedLine.ilosc,
+      kosztWykonania: seedLine.kosztWykonania,
+      rabat: 0,
+      cenaSprzedazy: cena,
+    });
+
     expect(offerService.hasUpToDateRevision(1)).toBe(false);
 
     await offerService.saveWorkingCopy(1, {
       nrZamowieniaKlienta: null,
       rabatType: null,
       rabatValue: null,
-      globalMarginPct: null,
-      lines: [{ id: 1, negocjacje: 0, cenaSprzedazy: 800 }],
+      lines: [lineAt(800)],
     });
     await offerService.createRevision(1, 2);
     expect(offerService.hasUpToDateRevision(1)).toBe(true);
@@ -128,57 +241,36 @@ describe('offerService document save + revisions', () => {
       nrZamowieniaKlienta: null,
       rabatType: null,
       rabatValue: null,
-      globalMarginPct: null,
-      lines: [{ id: 1, negocjacje: 0, cenaSprzedazy: 900 }],
+      lines: [lineAt(900)],
     });
     expect(offerService.hasUpToDateRevision(1)).toBe(false);
   });
 });
 
-describe('offerService margin, discount, markAsSent', () => {
+describe('offerService markAsSent', () => {
   beforeEach(() => {
     resetDb();
-  });
-
-  it('applyGlobalMargin recalculates cenaSprzedazy from cost', async () => {
-    await offerService.saveWorkingCopy(1, {
-      nrZamowieniaKlienta: null,
-      rabatType: null,
-      rabatValue: null,
-      globalMarginPct: null,
-      lines: [{ id: 1, negocjacje: 25, cenaSprzedazy: 0 }],
-    });
-    // Seed line has koszt 0 — set koszt via db for a meaningful margin check
-    const db = getDb();
-    db.offerLines[0].kosztWykonania = 1000;
-    db.offerLines[0].negocjacje = 25;
-
-    await offerService.applyGlobalMargin(1, 20);
-    const detail = await offerService.get(1);
-    expect(detail!.offer.globalMarginPct).toBe(20);
-    expect(detail!.lines[0].cenaSprzedazy).toBe(1200);
-    expect(detail!.lines[0].negocjacje).toBe(25);
-  });
-
-  it('applyDiscount stores rabat without mutating line prices', async () => {
-    const before = await offerService.get(2);
-    const price = before!.lines[0].cenaSprzedazy;
-    await offerService.applyDiscount(2, 'KWOTA', 100);
-    const after = await offerService.get(2);
-    expect(after!.offer.rabatType).toBe('KWOTA');
-    expect(after!.offer.rabatValue).toBe(100);
-    expect(after!.lines[0].cenaSprzedazy).toBe(price);
   });
 
   it('markAsSent requires up-to-date revision and stamps RFQ', async () => {
     await expect(offerService.markAsSent(1)).rejects.toThrow(/revision/i);
 
+    const seedLine = (await offerService.get(1))!.lines[0];
     await offerService.saveWorkingCopy(1, {
       nrZamowieniaKlienta: null,
       rabatType: null,
       rabatValue: null,
-      globalMarginPct: null,
-      lines: [{ id: 1, negocjacje: 0, cenaSprzedazy: 500 }],
+      lines: [
+        {
+          id: seedLine.id,
+          lp: 1,
+          nazwaPrzyrzadu: seedLine.nazwaPrzyrzadu,
+          ilosc: seedLine.ilosc,
+          kosztWykonania: seedLine.kosztWykonania,
+          rabat: 0,
+          cenaSprzedazy: 500,
+        },
+      ],
     });
     await offerService.createRevision(1, 2);
 

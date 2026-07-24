@@ -15,6 +15,7 @@ function node(partial: Partial<BomNode> & Pick<BomNode, 'id' | 'parentId'>): Bom
   return {
     rfqId: 1,
     templateId: null,
+    orderId: null,
     lp: 1,
     numerDetalu: '',
     ilosc: 1,

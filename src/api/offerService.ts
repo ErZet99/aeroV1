@@ -3,13 +3,13 @@ import type { Offer, OfferLine, OfferRevision } from '@/types/models';
 import type { OfferStatus, RabatType } from '@/types/enums';
 import { round2 } from '@/lib/money';
 import {
-  applyMarginToLines,
+  captureRevisionSnapshot,
   captureSnapshot,
   nextRevisionLabel,
   snapshotEquals,
 } from '@/services/offerDocument';
 
-export { discountedTotal, offerSummary, applyMarginToLines, salePriceFromMargin } from '@/services/offerDocument';
+export { discountedTotal, offerSummary } from '@/services/offerDocument';
 
 export interface OfferLineDTO {
   id: number;
@@ -20,29 +20,35 @@ export interface OfferLineDTO {
   sourceRfqId: number | null;
   sourceBomNodeId: number | null;
   kosztWykonania: number;
-  negocjacje: number;
+  rabat: number;
   cenaSprzedazy: number;
   wartosc?: number;
   zysk?: number;
   marza?: number;
 }
 
+/** One line in a working-copy save. `id: null` = new manual line to insert. */
+export interface WorkingCopyLine {
+  id: number | null;
+  lp: number;
+  nazwaPrzyrzadu: string;
+  ilosc: number;
+  kosztWykonania: number;
+  rabat: number;
+  cenaSprzedazy: number;
+}
+
 export interface WorkingCopyPayload {
   nrZamowieniaKlienta: string | null;
   rabatType: RabatType | null;
   rabatValue: number | null;
-  globalMarginPct: number | null;
-  lines: Array<{
-    id: number;
-    negocjacje: number;
-    cenaSprzedazy: number;
-  }>;
+  lines: WorkingCopyLine[];
 }
 
 function toLineDtos(lines: OfferLine[], role?: string): OfferLineDTO[] {
   return lines.map(line => {
-    const wartosc = round2((line.cenaSprzedazy + line.negocjacje) * line.ilosc);
-    const zysk = round2((line.cenaSprzedazy + line.negocjacje - line.kosztWykonania) * line.ilosc);
+    const wartosc = round2((line.cenaSprzedazy - line.rabat) * line.ilosc);
+    const zysk = round2((line.cenaSprzedazy - line.rabat - line.kosztWykonania) * line.ilosc);
     const marza = wartosc > 0 ? round2((zysk / wartosc) * 100) : 0;
 
     const dto: OfferLineDTO = {
@@ -124,7 +130,6 @@ export async function createFromRfq(
     status: 'SZKIC',
     rabatType: null,
     rabatValue: null,
-    globalMarginPct: null,
     salesRepId: currentUserId,
     deliveryTimeId: null,
     version: 1,
@@ -141,7 +146,7 @@ export async function createFromRfq(
     sourceRfqId: rfqId,
     sourceBomNodeId: root.id,
     kosztWykonania: root.totalCost,
-    negocjacje: 0,
+    rabat: 0,
     cenaSprzedazy: 0,
   }));
 
@@ -151,7 +156,11 @@ export async function createFromRfq(
   return JSON.parse(JSON.stringify(newOffer));
 }
 
-/** Persist whole working copy (header + lines). Does not create a revision. */
+/**
+ * Persist whole working copy (header + lines) — reconciles the line set:
+ * updates existing, inserts manual lines (`id: null`), deletes omitted ones.
+ * Does not create a revision.
+ */
 export async function saveWorkingCopy(id: number, payload: WorkingCopyPayload): Promise<Offer | null> {
   await delay();
   const db = getDb();
@@ -164,19 +173,51 @@ export async function saveWorkingCopy(id: number, payload: WorkingCopyPayload): 
     nrZamowieniaKlienta: payload.nrZamowieniaKlienta,
     rabatType: payload.rabatType,
     rabatValue: payload.rabatValue,
-    globalMarginPct: payload.globalMarginPct,
     version: offer.version + 1,
     updatedAt: new Date().toISOString(),
   };
 
-  for (const patch of payload.lines) {
-    const lineIdx = db.offerLines.findIndex(l => l.id === patch.id && l.offerId === id);
-    if (lineIdx < 0) continue;
-    db.offerLines[lineIdx] = {
-      ...db.offerLines[lineIdx],
-      negocjacje: patch.negocjacje,
+  const keptIds = new Set<number>();
+  const rebuilt: OfferLine[] = payload.lines.map((patch, index) => {
+    const lp = index + 1;
+    if (patch.id !== null) {
+      const existing = db.offerLines.find(l => l.id === patch.id && l.offerId === id);
+      if (existing) {
+        keptIds.add(existing.id);
+        return {
+          ...existing,
+          lp,
+          nazwaPrzyrzadu: patch.nazwaPrzyrzadu,
+          ilosc: patch.ilosc,
+          kosztWykonania: patch.kosztWykonania,
+          rabat: patch.rabat,
+          cenaSprzedazy: patch.cenaSprzedazy,
+        };
+      }
+    }
+    // New manual line — no BOM/RFQ source.
+    const created: OfferLine = {
+      id: nextId('offerLines'),
+      offerId: id,
+      lp,
+      nazwaPrzyrzadu: patch.nazwaPrzyrzadu,
+      ilosc: patch.ilosc,
+      sourceRfqId: null,
+      sourceBomNodeId: null,
+      kosztWykonania: patch.kosztWykonania,
+      rabat: patch.rabat,
       cenaSprzedazy: patch.cenaSprzedazy,
     };
+    keptIds.add(created.id);
+    return created;
+  });
+
+  // Drop lines the payload no longer contains; keep other offers' lines untouched.
+  db.offerLines = db.offerLines.filter(l => l.offerId !== id || keptIds.has(l.id));
+  for (const line of rebuilt) {
+    const idx = db.offerLines.findIndex(l => l.id === line.id);
+    if (idx >= 0) db.offerLines[idx] = line;
+    else db.offerLines.push(line);
   }
 
   saveDb();
@@ -234,7 +275,7 @@ export async function createRevision(offerId: number, userId: number): Promise<O
   const lines = db.offerLines.filter(l => l.offerId === offerId);
   const existing = db.offerRevisions.filter(r => r.offerId === offerId).map(r => r.revision);
   const label = nextRevisionLabel(existing);
-  const snapshot = captureSnapshot(offer, lines);
+  const snapshot = captureRevisionSnapshot(offer, lines, db.bomNodes);
 
   const revision: OfferRevision = {
     id: nextId('offerRevisions'),
@@ -301,51 +342,6 @@ export async function markAsSent(id: number): Promise<Offer> {
     rfq.updatedAt = new Date().toISOString();
   }
 
-  saveDb();
-  return JSON.parse(JSON.stringify(db.offers[offerIdx]));
-}
-
-/** Apply global margin to all lines and store pct on the offer (working copy). */
-export async function applyGlobalMargin(id: number, marginPct: number): Promise<Offer | null> {
-  await delay();
-  const db = getDb();
-  const offerIdx = db.offers.findIndex(o => o.id === id);
-  if (offerIdx < 0) return null;
-
-  const offer = db.offers[offerIdx];
-  const lines = db.offerLines.filter(l => l.offerId === id);
-  const updated = applyMarginToLines(lines, marginPct);
-
-  for (const line of updated) {
-    const idx = db.offerLines.findIndex(l => l.id === line.id);
-    if (idx >= 0) db.offerLines[idx] = line;
-  }
-
-  db.offers[offerIdx] = {
-    ...offer,
-    globalMarginPct: marginPct,
-    version: offer.version + 1,
-    updatedAt: new Date().toISOString(),
-  };
-  saveDb();
-  return JSON.parse(JSON.stringify(db.offers[offerIdx]));
-}
-
-/** Persist discount fields on the working copy (does not mutate line prices). */
-export async function applyDiscount(id: number, type: RabatType, value: number): Promise<Offer | null> {
-  await delay();
-  const db = getDb();
-  const offerIdx = db.offers.findIndex(o => o.id === id);
-  if (offerIdx < 0) return null;
-
-  const offer = db.offers[offerIdx];
-  db.offers[offerIdx] = {
-    ...offer,
-    rabatType: type,
-    rabatValue: value,
-    version: offer.version + 1,
-    updatedAt: new Date().toISOString(),
-  };
   saveDb();
   return JSON.parse(JSON.stringify(db.offers[offerIdx]));
 }

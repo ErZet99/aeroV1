@@ -1,54 +1,36 @@
 import { describe, it, expect } from 'vitest';
 import {
-  applyMarginToLines,
   buildOfferPdfHtml,
   captureSnapshot,
   discountedTotal,
   nextRevisionLabel,
   offerSummary,
-  salePriceFromMargin,
   snapshotEquals,
 } from '@/services/offerDocument';
 import type { Offer, OfferLine } from '@/types/models';
 
 describe('offerDocument commercial math', () => {
-  it('derives sale price from margin percent on cost', () => {
-    expect(salePriceFromMargin(1000, 20)).toBe(1200);
-    expect(salePriceFromMargin(100, 12.5)).toBe(112.5);
-  });
-
-  it('applies global margin to all lines without touching negocjacje', () => {
-    const lines = applyMarginToLines(
-      [
-        { id: 1, kosztWykonania: 1000, cenaSprzedazy: 0, negocjacje: 50 },
-        { id: 2, kosztWykonania: 200, cenaSprzedazy: 0, negocjacje: 0 },
-      ],
-      25
-    );
-    expect(lines[0]).toMatchObject({ cenaSprzedazy: 1250, negocjacje: 50 });
-    expect(lines[1]).toMatchObject({ cenaSprzedazy: 250, negocjacje: 0 });
-  });
-
   it('computes discount PROCENT and KWOTA', () => {
     expect(discountedTotal(1000, 'PROCENT', 10)).toBe(900);
     expect(discountedTotal(1000, 'KWOTA', 150)).toBe(850);
     expect(discountedTotal(1000, null, null)).toBe(1000);
   });
 
-  it('builds live summary suma → marża → rabat → razem', () => {
+  it('builds live summary: per-unit rabat in lines, kwota rabat ogólny in razem', () => {
     const summary = offerSummary(
       [
-        { cenaSprzedazy: 1200, negocjacje: 0, kosztWykonania: 1000, ilosc: 1 },
-        { cenaSprzedazy: 500, negocjacje: 100, kosztWykonania: 400, ilosc: 2 },
+        { cenaSprzedazy: 1200, rabat: 0, kosztWykonania: 1000, ilosc: 1 },
+        { cenaSprzedazy: 600, rabat: 100, kosztWykonania: 400, ilosc: 2 },
       ],
-      'PROCENT',
-      10
+      'KWOTA',
+      240
     );
-    // line1 wartosc=1200 zysk=200; line2 wartosc=1200 zysk=400 → suma=2400, marża=600
-    expect(summary.suma).toBe(2400);
-    expect(summary.marzaKwota).toBe(600);
+    // line1 wartosc=(1200-0)*1=1200 zysk=200; line2 wartosc=(600-100)*2=1000 zysk=200
+    // suma=2200, marża(globalna)=400, rabat ogólny 240 → razem=1960
+    expect(summary.suma).toBe(2200);
+    expect(summary.marzaKwota).toBe(400);
     expect(summary.rabatKwota).toBe(240);
-    expect(summary.razem).toBe(2160);
+    expect(summary.razem).toBe(1960);
   });
 });
 
@@ -64,7 +46,6 @@ describe('offerDocument revisions', () => {
     status: 'SZKIC',
     rabatType: null,
     rabatValue: null,
-    globalMarginPct: 20,
     salesRepId: 2,
     deliveryTimeId: 1,
     version: 1,
@@ -82,7 +63,7 @@ describe('offerDocument revisions', () => {
       sourceRfqId: 1,
       sourceBomNodeId: 5,
       kosztWykonania: 1000,
-      negocjacje: 0,
+      rabat: 0,
       cenaSprzedazy: 1200,
     },
   ];

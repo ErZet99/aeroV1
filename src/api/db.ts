@@ -1,6 +1,6 @@
 import type {
   User, Entity, Client, Supplier, DictItem, Holiday, Rfq, BomNode, Template, Offer, OfferLine,
-  OfferRevision, ComponentGroup, ComponentKind, Operation, ComponentKindSupplier,
+  OfferRevision, Order, ComponentGroup, ComponentKind, Operation, ComponentKindSupplier,
 } from '@/types/models';
 import {
   seedUsers,
@@ -24,6 +24,8 @@ import {
   seedComponentKindSuppliers,
 } from './seed';
 import { recalcTree } from '@/services/costService';
+import { nodeSubtree } from '@/services/bomEditor';
+import type { OfferRevisionSnapshot } from '@/types/models';
 
 export interface Db {
   users: User[];
@@ -45,6 +47,7 @@ export interface Db {
   offers: Offer[];
   offerLines: OfferLine[];
   offerRevisions: OfferRevision[];
+  orders: Order[];
   counters: Record<string, number>;
 }
 
@@ -57,7 +60,7 @@ export class ConflictError extends Error {
   }
 }
 
-const DB_KEY = 'aero-erp-db-v6';
+const DB_KEY = 'aero-erp-db-v8';
 
 function createInitialDb(): Db {
   const bomNodes = JSON.parse(JSON.stringify(seedBomNodes)) as BomNode[];
@@ -108,6 +111,7 @@ function createInitialDb(): Db {
     offers: JSON.parse(JSON.stringify(seedOffers)),
     offerLines: JSON.parse(JSON.stringify(seedOfferLines)),
     offerRevisions: JSON.parse(JSON.stringify(seedOfferRevisions)),
+    orders: [],
     counters: {
       users: 4,
       entities: 3,
@@ -128,6 +132,7 @@ function createInitialDb(): Db {
       offers: 3,
       offerLines: 3,
       offerRevisions: 2,
+      orders: 0,
     },
   };
 }
@@ -194,11 +199,35 @@ export function getDb(): Db {
       if (!db.offerRevisions) {
         db.offerRevisions = JSON.parse(JSON.stringify(seedOfferRevisions));
       }
-      for (const offer of db.offers ?? []) {
-        if (!('globalMarginPct' in offer)) {
-          (offer as Offer).globalMarginPct = null;
-        }
+      if (!db.orders) {
+        db.orders = [];
       }
+      if (db.counters && db.counters.orders == null) {
+        db.counters.orders = 0;
+      }
+      // Option A: older revisions froze commercial lines only — backfill trees from live BOM.
+      db.offerRevisions = db.offerRevisions.map(rev => {
+        const snapshot = rev.snapshot as OfferRevisionSnapshot;
+        return {
+          ...rev,
+          snapshot: {
+            ...snapshot,
+            lines: snapshot.lines.map(line => {
+              if (Array.isArray(line.bomSnapshot)) return line;
+              const bomSnapshot =
+                line.sourceBomNodeId == null
+                  ? []
+                  : (JSON.parse(
+                      JSON.stringify(nodeSubtree(db!.bomNodes, line.sourceBomNodeId))
+                    ) as BomNode[]);
+              return { ...line, bomSnapshot };
+            }),
+          },
+        };
+      });
+      db.bomNodes.forEach(n => {
+        if (n.orderId === undefined) n.orderId = null;
+      });
       saveDb();
     } else {
       db = createInitialDb();
@@ -224,6 +253,8 @@ export function nextId(collection: keyof Omit<Db, 'counters'>): number {
 /** Wipe persisted DB. Pass reload=true from UI; tests omit reload. */
 export function resetDb(reload = false): void {
   storageRemove(DB_KEY);
+  storageRemove('aero-erp-db-v7');
+  storageRemove('aero-erp-db-v6');
   storageRemove('aero-erp-db-v5');
   storageRemove('aero-erp-db-v4');
   storageRemove('aero-erp-db-v3');

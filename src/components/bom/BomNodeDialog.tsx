@@ -64,7 +64,7 @@ interface BomNodeDialogProps {
     existing: BomNode | null;
     fields: Omit<
       BomNode,
-      'id' | 'rfqId' | 'templateId' | 'parentId' | 'lp' | 'ownCost' | 'unitCost' | 'totalCost' | 'version'
+      'id' | 'rfqId' | 'templateId' | 'orderId' | 'parentId' | 'lp' | 'ownCost' | 'unitCost' | 'totalCost' | 'version'
     >;
   }) => void;
 }
@@ -233,6 +233,7 @@ export function BomNodeDialog({
     id: node?.id ?? 0,
     rfqId: null,
     templateId: null,
+    orderId: null,
     parentId,
     lp: 1,
     numerDetalu,

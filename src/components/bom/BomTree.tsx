@@ -1,7 +1,9 @@
 import {
   Fragment,
+  forwardRef,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useMemo,
   useRef,
   useState,
@@ -16,6 +18,7 @@ import {
 } from '@tanstack/react-table';
 import type { ExpandedState } from '@tanstack/react-table';
 import * as bomService from '@/api/bomService';
+import type { BomOwnerType } from '@/api/bomService';
 import * as dictionaryService from '@/api/dictionaryService';
 import * as templateService from '@/api/templateService';
 import { getDb } from '@/api/db';
@@ -59,12 +62,22 @@ import { BomNodeDialog } from './BomNodeDialog';
 
 type TreeNode = BomNode & { children: TreeNode[]; lpPath: string };
 
+/** Parent document Save commits the tree through this handle (`embedded` mode). */
+export interface BomTreeHandle {
+  commit: () => Promise<void>;
+}
+
 interface BomTreeProps {
-  ownerType: 'rfq' | 'template';
+  ownerType: BomOwnerType;
   ownerId: number;
-  /** Document title shown in the sticky action bar. */
+  /** Document title shown in the sticky action bar (standalone mode). */
   title?: string;
   onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * When true, hide the tree's own Save bar; parent document Save commits via ref
+   * (`docs/TASKS.md` Etap 3 — order whole-document save).
+   */
+  embedded?: boolean;
 }
 
 function buildTree(nodes: BomNode[]): TreeNode[] {
@@ -96,7 +109,10 @@ function snapshotOf(nodes: BomNode[]): string {
 
 const columnHelper = createColumnHelper<TreeNode>();
 
-export function BomTree({ ownerType, ownerId, title, onDirtyChange }: BomTreeProps) {
+export const BomTree = forwardRef<BomTreeHandle, BomTreeProps>(function BomTree(
+  { ownerType, ownerId, title, onDirtyChange, embedded = false },
+  ref
+) {
   const { t } = useTranslation();
 
   const [nodes, setNodes] = useState<BomNode[]>([]);
@@ -192,6 +208,8 @@ export function BomTree({ ownerType, ownerId, title, onDirtyChange }: BomTreePro
       setSaving(false);
     }
   }, [ownerType, ownerId, nodes]);
+
+  useImperativeHandle(ref, () => ({ commit: save }), [save]);
 
   const treeData = useMemo(
     () => buildTree(activeCardSubtree(nodes, activeRootId)),
@@ -434,8 +452,7 @@ export function BomTree({ ownerType, ownerId, title, onDirtyChange }: BomTreePro
     const cloned: BomNode[] = tplNodes.map(n => ({
       ...JSON.parse(JSON.stringify(n)),
       id: idMap.get(n.id)!,
-      rfqId: ownerType === 'rfq' ? ownerId : null,
-      templateId: ownerType === 'template' ? ownerId : null,
+      ...bomService.ownerFields(ownerType, ownerId),
       parentId: n.parentId !== null ? idMap.get(n.parentId) ?? null : null,
     }));
 
@@ -452,7 +469,7 @@ export function BomTree({ ownerType, ownerId, title, onDirtyChange }: BomTreePro
     existing: BomNode | null;
     fields: Omit<
       BomNode,
-      'id' | 'rfqId' | 'templateId' | 'parentId' | 'lp' | 'ownCost' | 'unitCost' | 'totalCost' | 'version'
+      'id' | 'rfqId' | 'templateId' | 'orderId' | 'parentId' | 'lp' | 'ownCost' | 'unitCost' | 'totalCost' | 'version'
     >;
   }) {
     if (payload.existing) {
@@ -469,8 +486,7 @@ export function BomTree({ ownerType, ownerId, title, onDirtyChange }: BomTreePro
     const siblings = nodes.filter(n => n.parentId === payload.parentId);
     const newNode: BomNode = {
       id: bomService.allocNodeId(),
-      rfqId: ownerType === 'rfq' ? ownerId : null,
-      templateId: ownerType === 'template' ? ownerId : null,
+      ...bomService.ownerFields(ownerType, ownerId),
       parentId: payload.parentId,
       lp: siblings.length + 1,
       ownCost: 0,
@@ -486,15 +502,17 @@ export function BomTree({ ownerType, ownerId, title, onDirtyChange }: BomTreePro
 
   return (
     <div className="flex min-w-0 flex-col">
-      <DocumentActionBar
-        title={title ?? t('rfq.wycenaBom')}
-        dirty={dirty}
-        saving={saving}
-        savedAt={savedAt}
-        onSave={() => void save()}
-      />
+      {!embedded && (
+        <DocumentActionBar
+          title={title ?? t('rfq.wycenaBom')}
+          dirty={dirty}
+          saving={saving}
+          savedAt={savedAt}
+          onSave={() => void save()}
+        />
+      )}
 
-      <div className="flex flex-col gap-4 p-4">
+      <div className={cn('flex flex-col gap-4', embedded ? 'pt-0' : 'p-4')}>
         <div className="flex flex-wrap items-center gap-3">
           <Button onClick={() => setNodeDialog({ open: true, parentId: null, node: null })}>
             {t('bom.addPrzyrzad')}
@@ -675,4 +693,4 @@ export function BomTree({ ownerType, ownerId, title, onDirtyChange }: BomTreePro
       />
     </div>
   );
-}
+});

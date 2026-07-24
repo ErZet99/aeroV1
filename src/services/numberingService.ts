@@ -17,6 +17,22 @@ export function nextRfqNumber(date: string, existingNumbers: string[]): string {
   return `${maxLp + 1}-${month}-${year}`;
 }
 
+const ORDER_NUMER_RE = /^(\d{2})-(\d{3})$/;
+
+/** Order number: {YY}-{NNN}, counter resets each year (`03-RULES.md` §5). */
+export function nextOrderNumber(date: string, existingNumbers: string[]): string {
+  const yy = date.substring(2, 4);
+
+  let maxNnn = 0;
+  for (const num of existingNumbers) {
+    const m = ORDER_NUMER_RE.exec(num);
+    if (!m || m[1] !== yy) continue;
+    maxNnn = Math.max(maxNnn, parseInt(m[2], 10));
+  }
+
+  return `${yy}-${String(maxNnn + 1).padStart(3, '0')}`;
+}
+
 export function nextRevision(rev: string): string {
   if (rev.length !== 1) {
     return 'B';

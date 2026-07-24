@@ -2,8 +2,26 @@ import { delay, getDb, saveDb, nextId } from './db';
 import type { BomNode, BomNodeOperation, SupplierOffer } from '@/types/models';
 import { recalcTree } from '@/services/costService';
 
+export type BomOwnerType = 'rfq' | 'template' | 'order';
+
+function isOwnedBy(node: BomNode, ownerType: BomOwnerType, ownerId: number): boolean {
+  if (ownerType === 'rfq') return node.rfqId === ownerId;
+  if (ownerType === 'template') return node.templateId === ownerId;
+  return node.orderId === ownerId;
+}
+
+/** Owner ids on a node, exactly one non-null (`02-DATA-MODEL.md` §3). */
+export function ownerFields(ownerType: BomOwnerType, ownerId: number): Pick<BomNode, 'rfqId' | 'templateId' | 'orderId'> {
+  return {
+    rfqId: ownerType === 'rfq' ? ownerId : null,
+    templateId: ownerType === 'template' ? ownerId : null,
+    orderId: ownerType === 'order' ? ownerId : null,
+  };
+}
+
 function ownerNodesOf(node: BomNode, all: BomNode[]): BomNode[] {
   if (node.rfqId != null) return all.filter(n => n.rfqId === node.rfqId);
+  if (node.orderId != null) return all.filter(n => n.orderId === node.orderId);
   return all.filter(n => n.templateId === node.templateId);
 }
 
@@ -26,37 +44,25 @@ function emptyOps(ids: number[] = []): BomNodeOperation[] {
   }));
 }
 
-export async function getTree(ownerType: 'rfq' | 'template', ownerId: number): Promise<BomNode[]> {
+export async function getTree(ownerType: BomOwnerType, ownerId: number): Promise<BomNode[]> {
   await delay();
   const db = getDb();
-  const nodes = db.bomNodes.filter(n =>
-    ownerType === 'rfq' ? n.rfqId === ownerId : n.templateId === ownerId
-  );
+  const nodes = db.bomNodes.filter(n => isOwnedBy(n, ownerType, ownerId));
   return JSON.parse(JSON.stringify(nodes));
 }
 
 /** Replace entire owner tree (document save). Recalcs and persists. */
 export async function replaceTree(
-  ownerType: 'rfq' | 'template',
+  ownerType: BomOwnerType,
   ownerId: number,
   nodes: BomNode[]
 ): Promise<BomNode[]> {
   await delay();
   const db = getDb();
-  db.bomNodes = db.bomNodes.filter(n =>
-    ownerType === 'rfq' ? n.rfqId !== ownerId : n.templateId !== ownerId
-  );
+  db.bomNodes = db.bomNodes.filter(n => !isOwnedBy(n, ownerType, ownerId));
 
   const copy = JSON.parse(JSON.stringify(nodes)) as BomNode[];
-  copy.forEach(n => {
-    if (ownerType === 'rfq') {
-      n.rfqId = ownerId;
-      n.templateId = null;
-    } else {
-      n.templateId = ownerId;
-      n.rfqId = null;
-    }
-  });
+  copy.forEach(n => Object.assign(n, ownerFields(ownerType, ownerId)));
 
   const recalced = recalcTree(copy);
   db.bomNodes.push(...recalced);
@@ -65,7 +71,7 @@ export async function replaceTree(
 }
 
 export async function addNode(input: {
-  ownerType: 'rfq' | 'template';
+  ownerType: BomOwnerType;
   ownerId: number;
   parentId: number | null;
   numerDetalu: string;
@@ -85,18 +91,14 @@ export async function addNode(input: {
   await delay();
   const db = getDb();
 
-  const ownerNodes = db.bomNodes.filter(n => {
-    if (input.ownerType === 'rfq') return n.rfqId === input.ownerId;
-    return n.templateId === input.ownerId;
-  });
+  const ownerNodes = db.bomNodes.filter(n => isOwnedBy(n, input.ownerType, input.ownerId));
 
   const siblings = ownerNodes.filter(n => n.parentId === input.parentId);
   const lp = siblings.length + 1;
 
   const newNode: BomNode = {
     id: nextId('bomNodes'),
-    rfqId: input.ownerType === 'rfq' ? input.ownerId : null,
-    templateId: input.ownerType === 'template' ? input.ownerId : null,
+    ...ownerFields(input.ownerType, input.ownerId),
     parentId: input.parentId,
     lp,
     numerDetalu: input.numerDetalu,

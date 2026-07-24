@@ -1,8 +1,15 @@
 import { round2 } from '@/lib/money';
 import type { RabatType } from '@/types/enums';
-import type { Offer, OfferDocumentSnapshot, OfferLine } from '@/types/models';
+import type {
+  BomNode,
+  Offer,
+  OfferDocumentSnapshot,
+  OfferLine,
+  OfferRevisionSnapshot,
+} from '@/types/models';
+import { nodeSubtree } from './bomEditor';
 
-export type { OfferDocumentSnapshot };
+export type { OfferDocumentSnapshot, OfferRevisionSnapshot };
 
 export interface OfferSummary {
   suma: number;
@@ -11,23 +18,7 @@ export interface OfferSummary {
   razem: number;
 }
 
-/** Sale price from global margin: koszt × (1 + pct/100). Negocjacje stay separate. */
-export function salePriceFromMargin(kosztWykonania: number, marginPct: number): number {
-  return round2(kosztWykonania * (1 + marginPct / 100));
-}
-
-/** Apply global margin to every line's cenaSprzedazy (negocjacje untouched). */
-export function applyMarginToLines<T extends { kosztWykonania: number; cenaSprzedazy: number }>(
-  lines: T[],
-  marginPct: number
-): T[] {
-  return lines.map(line => ({
-    ...line,
-    cenaSprzedazy: salePriceFromMargin(line.kosztWykonania, marginPct),
-  }));
-}
-
-/** Offer total after discount (PROCENT / KWOTA). */
+/** Offer total after whole-offer discount (PROCENT / KWOTA). v1 UI uses KWOTA only. */
 export function discountedTotal(
   total: number,
   rabatType: RabatType | null,
@@ -38,22 +29,26 @@ export function discountedTotal(
   return round2(total - rabatValue);
 }
 
-function lineWartosc(line: { cenaSprzedazy: number; negocjacje: number; ilosc: number }): number {
-  return round2((line.cenaSprzedazy + line.negocjacje) * line.ilosc);
+/** Line value after per-unit discount: (cena_sprzedaży − rabat) × ilość. */
+function lineWartosc(line: { cenaSprzedazy: number; rabat: number; ilosc: number }): number {
+  return round2((line.cenaSprzedazy - line.rabat) * line.ilosc);
 }
 
 function lineZysk(line: {
   cenaSprzedazy: number;
-  negocjacje: number;
+  rabat: number;
   kosztWykonania: number;
   ilosc: number;
 }): number {
-  return round2((line.cenaSprzedazy + line.negocjacje - line.kosztWykonania) * line.ilosc);
+  return round2((line.cenaSprzedazy - line.rabat - line.kosztWykonania) * line.ilosc);
 }
 
-/** Live summary: suma → marża → rabat → razem. */
+/**
+ * Live summary. `marzaKwota` = Σ line profit (read-only "Marża globalna", never added to razem).
+ * `rabatKwota` = whole-offer discount amount. `razem` = suma − rabat ogólny.
+ */
 export function offerSummary(
-  lines: Array<{ cenaSprzedazy: number; negocjacje: number; kosztWykonania: number; ilosc: number }>,
+  lines: Array<{ cenaSprzedazy: number; rabat: number; kosztWykonania: number; ilosc: number }>,
   rabatType: RabatType | null,
   rabatValue: number | null
 ): OfferSummary {
@@ -76,7 +71,6 @@ export function captureSnapshot(offer: Offer, lines: OfferLine[]): OfferDocument
     nrZamowieniaKlienta: offer.nrZamowieniaKlienta,
     rabatType: offer.rabatType,
     rabatValue: offer.rabatValue,
-    globalMarginPct: offer.globalMarginPct,
     salesRepId: offer.salesRepId,
     deliveryTimeId: offer.deliveryTimeId,
     lines: lines
@@ -89,15 +83,53 @@ export function captureSnapshot(offer: Offer, lines: OfferLine[]): OfferDocument
         sourceRfqId: line.sourceRfqId,
         sourceBomNodeId: line.sourceBomNodeId,
         kosztWykonania: line.kosztWykonania,
-        negocjacje: line.negocjacje,
+        rabat: line.rabat,
         cenaSprzedazy: line.cenaSprzedazy,
       })),
   };
 }
 
+/**
+ * Freeze a revision: commercial content plus a copy of each line's BOM tree, taken
+ * from `bomNodes` via `sourceBomNodeId`. Manual lines freeze an empty tree.
+ */
+export function captureRevisionSnapshot(
+  offer: Offer,
+  lines: OfferLine[],
+  bomNodes: BomNode[]
+): OfferRevisionSnapshot {
+  const base = captureSnapshot(offer, lines);
+  return {
+    ...base,
+    lines: base.lines.map(line => ({
+      ...line,
+      bomSnapshot:
+        line.sourceBomNodeId === null
+          ? []
+          : JSON.parse(JSON.stringify(nodeSubtree(bomNodes, line.sourceBomNodeId))),
+    })),
+  };
+}
+
 /** True when working copy equals the given revision snapshot (commercial content). */
 export function snapshotEquals(a: OfferDocumentSnapshot, b: OfferDocumentSnapshot): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+  return JSON.stringify(commercialOnly(a)) === JSON.stringify(commercialOnly(b));
+}
+
+function commercialOnly(snapshot: OfferDocumentSnapshot): OfferDocumentSnapshot {
+  return {
+    ...snapshot,
+    lines: snapshot.lines.map(line => ({
+      lp: line.lp,
+      nazwaPrzyrzadu: line.nazwaPrzyrzadu,
+      ilosc: line.ilosc,
+      sourceRfqId: line.sourceRfqId,
+      sourceBomNodeId: line.sourceBomNodeId,
+      kosztWykonania: line.kosztWykonania,
+      rabat: line.rabat,
+      cenaSprzedazy: line.cenaSprzedazy,
+    })),
+  };
 }
 
 /** Next revision letter given existing labels (empty → A). */

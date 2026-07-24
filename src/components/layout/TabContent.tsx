@@ -9,6 +9,8 @@ import { BomTree } from '@/components/bom/BomTree';
 import { TemplateList } from '@/components/template/TemplateList';
 import { OfferGrid } from '@/components/offer/OfferGrid';
 import { OfferDetail } from '@/components/offer/OfferDetail';
+import { OrderGrid } from '@/components/order/OrderGrid';
+import { OrderDetail } from '@/components/order/OrderDetail';
 
 function BomTab({ tab }: { tab: Tab }) {
   const setTabDirty = useTabsStore(s => s.setTabDirty);
@@ -47,6 +49,10 @@ function renderTabContentInner(tab: Tab, t: (key: string) => string) {
       return <OfferGrid />;
     case 'offer':
       return <OfferDetail offerId={tab.entityId!} />;
+    case 'order-list':
+      return <OrderGrid />;
+    case 'order':
+      return <OrderDetail orderId={tab.entityId!} />;
     default:
       return (
         <div className="p-8 text-muted-foreground">
