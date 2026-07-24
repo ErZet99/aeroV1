@@ -1,7 +1,6 @@
 export type Role = 'SUPER_ADMIN' | 'KIEROWNIK' | 'PRACOWNIK';
 export type RfqStatus = 'NOWE' | 'WYSLANE' | 'ZAAKCEPTOWANE' | 'WSTRZYMANE';
 export type OfferStatus = 'SZKIC' | 'WYSLANA' | 'ZAAKCEPTOWANA' | 'ODRZUCONA' | 'WSTRZYMANA';
-export type CostSource = 'ROLLUP' | 'MANUAL';
 export type RabatType = 'PROCENT' | 'KWOTA';
 export type GroupType = 'OPERACYJNA' | 'ZAKUPOWA';
 

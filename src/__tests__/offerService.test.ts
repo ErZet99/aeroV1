@@ -39,7 +39,7 @@ describe('offerService.createFromRfq', () => {
     const frozen = roots[0].totalCost;
     const offer = await offerService.createFromRfq(9, 2, [roots[0].id]);
 
-    await bomService.updateNode(roots[0].id, { costSource: 'MANUAL', unitCost: frozen + 999 });
+    await bomService.updateNode(roots[0].id, { manualUnitCost: frozen + 999 });
 
     const detail = await offerService.get(offer.id);
     expect(detail!.lines[0].kosztWykonania).toBe(frozen);

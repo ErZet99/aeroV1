@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import * as bomService from '@/api/bomService';
-import type { BomNode, Supplier, SupplierOffer } from '@/types/models';
+import type { Supplier, SupplierOffer } from '@/types/models';
 import { round2, formatPln } from '@/lib/money';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -33,9 +32,11 @@ interface OfferRow {
 interface SupplierCompareProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  node: BomNode | null;
+  title: string;
+  initialOffers: SupplierOffer[];
   suppliers: Supplier[];
-  onSaved: () => void;
+  /** Apply to working copy — no DB write. */
+  onApply: (offers: SupplierOffer[]) => void;
 }
 
 function emptyRow(): OfferRow {
@@ -45,19 +46,19 @@ function emptyRow(): OfferRow {
 export function SupplierCompare({
   open,
   onOpenChange,
-  node,
+  title,
+  initialOffers,
   suppliers,
-  onSaved,
+  onApply,
 }: SupplierCompareProps) {
   const { t } = useTranslation();
 
   const [rows, setRows] = useState<OfferRow[]>([emptyRow(), emptyRow(), emptyRow()]);
-  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (!open || !node) return;
+    if (!open) return;
     const initial: OfferRow[] = [0, 1, 2].map(i => {
-      const offer = node.supplierOffers[i];
+      const offer = initialOffers[i];
       if (!offer) return emptyRow();
       return {
         id: offer.id,
@@ -68,9 +69,7 @@ export function SupplierCompare({
       };
     });
     setRows(initial);
-  }, [open, node]);
-
-  if (!node) return null;
+  }, [open, initialOffers]);
 
   const supplierOptions = [
     { value: FREE_TEXT, label: t('bom.freeName') },
@@ -91,28 +90,21 @@ export function SupplierCompare({
 
   const finalRow = rows.find(row => row.isFinal && rowIsFilled(row));
 
-  async function handleSave() {
-    if (!node || saving) return;
-    setSaving(true);
-    try {
-      let nextId = 1;
-      const offers: SupplierOffer[] = rows.filter(rowIsFilled).map(row => {
-        const supplierId = row.supplierId === FREE_TEXT ? null : Number(row.supplierId);
-        const supplier = supplierId !== null ? suppliers.find(s => s.id === supplierId) : undefined;
-        return {
-          id: row.id ?? 1000 + nextId++,
-          supplierId,
-          supplierName: supplier ? supplier.name : row.supplierName.trim(),
-          cena: round2(Number(row.cena) || 0),
-          isFinal: row.isFinal,
-        };
-      });
-      await bomService.setSupplierOffers(node.id, offers);
-      onOpenChange(false);
-      onSaved();
-    } finally {
-      setSaving(false);
-    }
+  function handleApply() {
+    let nextId = 1;
+    const offers: SupplierOffer[] = rows.filter(rowIsFilled).map(row => {
+      const supplierId = row.supplierId === FREE_TEXT ? null : Number(row.supplierId);
+      const supplier = supplierId !== null ? suppliers.find(s => s.id === supplierId) : undefined;
+      return {
+        id: row.id ?? 1000 + nextId++,
+        supplierId,
+        supplierName: supplier ? supplier.name : row.supplierName.trim(),
+        cena: round2(Number(row.cena) || 0),
+        isFinal: row.isFinal,
+      };
+    });
+    onApply(offers);
+    onOpenChange(false);
   }
 
   return (
@@ -120,7 +112,7 @@ export function SupplierCompare({
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>
-            {t('bom.suppliers')} — {node.nazwaOpis}
+            {t('bom.suppliers')} — {title}
           </DialogTitle>
         </DialogHeader>
 
@@ -180,7 +172,6 @@ export function SupplierCompare({
             <div className="rounded-md border bg-muted/40 p-3 text-sm">
               {t('bom.contribution')}:{' '}
               <span className="font-medium">{formatPln(round2(Number(finalRow.cena) || 0))}</span>
-              {' → '}{t('bom.manual')} {t('bom.kosztJedn').toLowerCase()}
             </div>
           )}
         </div>
@@ -189,7 +180,7 @@ export function SupplierCompare({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             {t('common.cancel')}
           </Button>
-          <Button disabled={saving} onClick={() => void handleSave()}>
+          <Button onClick={handleApply}>
             {t('common.save')}
           </Button>
         </DialogFooter>

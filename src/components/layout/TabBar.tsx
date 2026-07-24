@@ -24,7 +24,10 @@ export function TabBar() {
           )}
           onClick={() => activateTab(tab.id)}
         >
-          <span className="whitespace-nowrap">{tab.title}</span>
+          <span className="whitespace-nowrap">
+            {tab.dirty ? '• ' : ''}
+            {tab.title}
+          </span>
           <button
             type="button"
             aria-label={t('common.close')}

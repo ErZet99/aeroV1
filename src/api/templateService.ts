@@ -8,6 +8,13 @@ export async function list(): Promise<Template[]> {
   return JSON.parse(JSON.stringify(db.templates));
 }
 
+/** Read template tree without persisting — for working-copy insert. */
+export async function getTemplateNodes(templateId: number): Promise<BomNode[]> {
+  await delay();
+  const db = getDb();
+  return JSON.parse(JSON.stringify(db.bomNodes.filter(n => n.templateId === templateId)));
+}
+
 export async function saveFromRfq(rfqId: number, name: string): Promise<Template> {
   await delay();
   const db = getDb();

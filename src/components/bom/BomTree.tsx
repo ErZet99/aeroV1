@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Fragment,
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useState,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   createColumnHelper,
@@ -12,7 +20,7 @@ import * as bomService from '@/api/bomService';
 import * as dictionaryService from '@/api/dictionaryService';
 import * as templateService from '@/api/templateService';
 import { getDb } from '@/api/db';
-import { CalculatorIcon, ChevronRightIcon, PencilIcon, PlusIcon, Trash2Icon } from 'lucide-react';
+import { ChevronRightIcon } from 'lucide-react';
 import type {
   BomNode,
   ComponentGroup,
@@ -23,6 +31,7 @@ import type {
   Supplier,
   Template,
 } from '@/types/models';
+import { computedUnitCost, recalcTree } from '@/services/costService';
 import { formatPln, round2 } from '@/lib/money';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
@@ -44,14 +53,21 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { BomNodeDialog } from './BomNodeDialog';
-import { CostModal } from './CostModal';
-import { SupplierCompare } from './SupplierCompare';
 
 type TreeNode = BomNode & { children: TreeNode[]; lpPath: string };
+
+export interface BomTreeHandle {
+  save: () => Promise<void>;
+  isDirty: () => boolean;
+  getRoots: () => BomNode[];
+}
 
 interface BomTreeProps {
   ownerType: 'rfq' | 'template';
   ownerId: number;
+  /** When true, hide own Save — parent document Save commits via ref. */
+  embedded?: boolean;
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 function buildTree(nodes: BomNode[]): TreeNode[] {
@@ -77,12 +93,20 @@ function buildTree(nodes: BomNode[]): TreeNode[] {
   return roots;
 }
 
+function snapshotOf(nodes: BomNode[]): string {
+  return JSON.stringify(nodes);
+}
+
 const columnHelper = createColumnHelper<TreeNode>();
 
-export function BomTree({ ownerType, ownerId }: BomTreeProps) {
+export const BomTree = forwardRef<BomTreeHandle, BomTreeProps>(function BomTree(
+  { ownerType, ownerId, embedded = false, onDirtyChange },
+  ref
+) {
   const { t } = useTranslation();
 
   const [nodes, setNodes] = useState<BomNode[]>([]);
+  const [committed, setCommitted] = useState('[]');
   const [groups, setGroups] = useState<ComponentGroup[]>([]);
   const [kinds, setKinds] = useState<ComponentKind[]>([]);
   const [operations, setOperations] = useState<Operation[]>([]);
@@ -91,15 +115,25 @@ export function BomTree({ ownerType, ownerId }: BomTreeProps) {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [expanded, setExpanded] = useState<ExpandedState>(true);
-  const [hoveredId, setHoveredId] = useState<number | null>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
 
   const [nodeDialog, setNodeDialog] = useState<{
     open: boolean;
     parentId: number | null;
     node: BomNode | null;
   }>({ open: false, parentId: null, node: null });
-  const [costNode, setCostNode] = useState<BomNode | null>(null);
-  const [supplierNode, setSupplierNode] = useState<BomNode | null>(null);
+
+  const dirty = snapshotOf(nodes) !== committed;
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange, nodes]);
+
+  const applyLocal = useCallback((next: BomNode[]) => {
+    setNodes(recalcTree(next));
+  }, []);
 
   const load = useCallback(async () => {
     const db = getDb();
@@ -109,20 +143,48 @@ export function BomTree({ ownerType, ownerId }: BomTreeProps) {
       dictionaryService.list('suppliers'),
       templateService.list(),
     ]);
-    setNodes(nodeData);
+    const recalced = recalcTree(nodeData);
+    setNodes(recalced);
+    setCommitted(snapshotOf(recalced));
     setGroups(db.componentGroups.filter(g => g.active));
     setKinds(db.componentKinds);
     setOperations(db.operations);
-    setKindSuppliers(db.componentKindSuppliers);
+    setKindSuppliers(db.componentKindSuppliers ?? []);
     setMaterials(materialData as DictItem[]);
     setSuppliers(supplierData as Supplier[]);
     setTemplates(templateData);
     setExpanded(true);
+    setSelectedId(null);
   }, [ownerType, ownerId]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const save = useCallback(async () => {
+    setSaving(true);
+    try {
+      const saved = await bomService.replaceTree(ownerType, ownerId, nodes);
+      setNodes(saved);
+      setCommitted(snapshotOf(saved));
+      const now = new Date();
+      setSavedAt(
+        `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+      );
+    } finally {
+      setSaving(false);
+    }
+  }, [ownerType, ownerId, nodes]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      save,
+      isDirty: () => snapshotOf(nodes) !== committed,
+      getRoots: () => nodes.filter(n => n.parentId === null).sort((a, b) => a.lp - b.lp),
+    }),
+    [save, nodes, committed]
+  );
 
   const treeData = useMemo(() => buildTree(nodes), [nodes]);
   const roots = useMemo(
@@ -191,16 +253,16 @@ export function BomTree({ ownerType, ownerId }: BomTreeProps) {
         header: t('bom.rodzaj'),
         cell: info => labelMaps.kinds.get(info.getValue()) ?? '—',
       }),
-      columnHelper.accessor('operationIds', {
+      columnHelper.accessor('operations', {
         header: t('bom.operacje'),
         cell: ({ getValue }) => {
-          const ids = getValue();
-          if (!ids.length) return t('bom.none');
+          const ops = getValue();
+          if (!ops.length) return t('bom.none');
           return (
             <div className="flex flex-wrap gap-1">
-              {ids.map(id => (
-                <Badge key={id} variant="secondary">
-                  {labelMaps.operations.get(id) ?? id}
+              {ops.map(o => (
+                <Badge key={o.operationId} variant="secondary">
+                  {labelMaps.operations.get(o.operationId) ?? o.operationId}
                 </Badge>
               ))}
             </div>
@@ -223,87 +285,45 @@ export function BomTree({ ownerType, ownerId }: BomTreeProps) {
           );
         },
       }),
-      columnHelper.accessor('unitCost', {
-        header: t('bom.kosztJedn'),
+      columnHelper.accessor('ownCost', {
+        header: t('bom.kosztWlasny'),
         cell: info => (
           <div className="text-right tabular-nums">{formatPln(info.getValue())}</div>
         ),
+      }),
+      columnHelper.accessor('unitCost', {
+        header: t('bom.kosztJedn'),
+        cell: ({ row }) => {
+          const n = row.original;
+          const children = nodes.filter(c => c.parentId === n.id);
+          const breakdown = computedUnitCost(n, children);
+          return (
+            <div className="text-right tabular-nums">
+              {formatPln(n.unitCost)}
+              {n.manualUnitCost !== null && (
+                <div className="text-xs font-normal text-muted-foreground">
+                  {t('bom.manualBadge')} {formatPln(n.manualUnitCost)}
+                  {' · '}
+                  {t('bom.fromBreakdown')} {formatPln(breakdown)}
+                </div>
+              )}
+            </div>
+          );
+        },
       }),
       columnHelper.accessor('totalCost', {
         header: t('bom.kosztCalk'),
         cell: ({ row }) => (
           <span className="flex items-center justify-end gap-1.5 whitespace-nowrap text-right font-medium tabular-nums">
             {formatPln(row.original.totalCost)}
-            {row.original.costSource === 'MANUAL' && (
+            {row.original.manualUnitCost !== null && (
               <Badge variant="secondary">{t('bom.manualBadge')}</Badge>
             )}
           </span>
         ),
       }),
-      columnHelper.display({
-        id: 'actions',
-        header: '',
-        cell: ({ row }) => {
-          const node = row.original;
-          const visible = hoveredId === node.id;
-          return (
-            <div
-              className={cn(
-                'flex items-center justify-end gap-0.5 transition-opacity',
-                visible ? 'opacity-100' : 'opacity-0'
-              )}
-            >
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                title={t('bom.addChild')}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setNodeDialog({ open: true, parentId: node.id, node: null });
-                }}
-              >
-                <PlusIcon className="size-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                title={t('bom.editNode')}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setNodeDialog({ open: true, parentId: node.parentId, node });
-                }}
-              >
-                <PencilIcon className="size-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                title={t('bom.costCalc')}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setCostNode(node);
-                }}
-              >
-                <CalculatorIcon className="size-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                title={t('bom.deleteNode')}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void handleDelete(node);
-                }}
-              >
-                <Trash2Icon className="size-4" />
-              </Button>
-            </div>
-          );
-        },
-      }),
     ],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [t, labelMaps, hoveredId]
+    [t, labelMaps, nodes]
   );
 
   const table = useReactTable({
@@ -316,34 +336,86 @@ export function BomTree({ ownerType, ownerId }: BomTreeProps) {
     getExpandedRowModel: getExpandedRowModel(),
   });
 
-  async function handleDelete(node: BomNode) {
+  function handleDelete(node: BomNode) {
     if (!window.confirm(t('bom.confirmDeleteSubtree'))) return;
-    await bomService.deleteNode(node.id);
-    await load();
+    const toDelete = new Set([node.id]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      nodes.forEach(n => {
+        if (n.parentId !== null && toDelete.has(n.parentId) && !toDelete.has(n.id)) {
+          toDelete.add(n.id);
+          changed = true;
+        }
+      });
+    }
+    applyLocal(nodes.filter(n => !toDelete.has(n.id)));
+    if (selectedId !== null && toDelete.has(selectedId)) setSelectedId(null);
   }
 
   async function handleApplyTemplate(templateId: string) {
-    await templateService.copyToRfq(Number(templateId), ownerId);
-    await load();
+    const tplNodes = await templateService.getTemplateNodes(Number(templateId));
+    const idMap = new Map<number, number>();
+    tplNodes.forEach(n => idMap.set(n.id, bomService.allocNodeId()));
+
+    const existingRootCount = nodes.filter(n => n.parentId === null).length;
+    const cloned: BomNode[] = tplNodes.map(n => ({
+      ...JSON.parse(JSON.stringify(n)),
+      id: idMap.get(n.id)!,
+      rfqId: ownerType === 'rfq' ? ownerId : null,
+      templateId: ownerType === 'template' ? ownerId : null,
+      parentId: n.parentId !== null ? idMap.get(n.parentId) ?? null : null,
+    }));
+
+    const copiedRoots = cloned.filter(n => n.parentId === null).sort((a, b) => a.lp - b.lp);
+    copiedRoots.forEach((root, i) => {
+      root.lp = existingRootCount + i + 1;
+    });
+
+    applyLocal([...nodes, ...cloned]);
   }
 
-  async function handleSaveTemplate() {
-    const name = window.prompt(t('bom.promptTemplateName'));
-    if (!name || !name.trim()) return;
-    const existing = await templateService.list();
-    if (existing.some(tpl => tpl.name === name.trim())) {
-      if (!window.confirm(t('bom.confirmOverwrite'))) return;
+  function handleCommitNode(payload: {
+    parentId: number | null;
+    existing: BomNode | null;
+    fields: Omit<
+      BomNode,
+      'id' | 'rfqId' | 'templateId' | 'parentId' | 'lp' | 'ownCost' | 'unitCost' | 'totalCost' | 'version'
+    >;
+  }) {
+    if (payload.existing) {
+      applyLocal(
+        nodes.map(n =>
+          n.id === payload.existing!.id
+            ? { ...n, ...payload.fields }
+            : n
+        )
+      );
+      return;
     }
-    await templateService.saveFromRfq(ownerId, name.trim());
-    await load();
+
+    const siblings = nodes.filter(n => n.parentId === payload.parentId);
+    const newNode: BomNode = {
+      id: bomService.allocNodeId(),
+      rfqId: ownerType === 'rfq' ? ownerId : null,
+      templateId: ownerType === 'template' ? ownerId : null,
+      parentId: payload.parentId,
+      lp: siblings.length + 1,
+      ownCost: 0,
+      unitCost: 0,
+      totalCost: 0,
+      version: 1,
+      ...payload.fields,
+    };
+    applyLocal([...nodes, newNode]);
   }
 
   const templateOptions = templates.map(tpl => ({ value: String(tpl.id), label: tpl.name }));
   const isEmpty = nodes.length === 0;
 
   return (
-    <div className="flex flex-col gap-4 p-4">
-      <div className="flex items-center gap-3">
+    <div className={cn('flex flex-col gap-4', embedded ? 'p-0' : 'p-4')}>
+      <div className="flex flex-wrap items-center gap-3">
         <Button onClick={() => setNodeDialog({ open: true, parentId: null, node: null })}>
           {t('bom.addPrzyrzad')}
         </Button>
@@ -365,10 +437,17 @@ export function BomTree({ ownerType, ownerId }: BomTreeProps) {
             </SelectContent>
           </Select>
         )}
-        {!isEmpty && ownerType === 'rfq' && (
-          <Button variant="outline" onClick={() => void handleSaveTemplate()}>
-            {t('bom.saveTemplate')}
-          </Button>
+        {!embedded && (
+          <>
+            <Button disabled={!dirty || saving} onClick={() => void save()}>
+              {t('common.save')}
+            </Button>
+            {savedAt && (
+              <span className="text-sm text-muted-foreground">
+                {t('common.savedAt', { time: savedAt })}
+              </span>
+            )}
+          </>
         )}
       </div>
 
@@ -411,7 +490,7 @@ export function BomTree({ ownerType, ownerId }: BomTreeProps) {
         <div className="p-8 text-muted-foreground">{t('bom.emptyTree')}</div>
       ) : (
         <div className="max-h-[calc(100vh-260px)] overflow-auto overflow-x-auto rounded-md border">
-          <Table className="min-w-[1400px]">
+          <Table className="min-w-[1500px]">
             <TableHeader className="sticky top-0 z-10 bg-background">
               {table.getHeaderGroups().map(headerGroup => (
                 <TableRow key={headerGroup.id}>
@@ -424,27 +503,73 @@ export function BomTree({ ownerType, ownerId }: BomTreeProps) {
               ))}
             </TableHeader>
             <TableBody>
-              {table.getRowModel().rows.map(row => (
-                <TableRow
-                  key={row.id}
-                  className="cursor-pointer hover:bg-muted/50"
-                  onMouseEnter={() => setHoveredId(row.original.id)}
-                  onMouseLeave={() => setHoveredId(null)}
-                  onClick={() =>
-                    setNodeDialog({
-                      open: true,
-                      parentId: row.original.parentId,
-                      node: row.original,
-                    })
-                  }
-                >
-                  {row.getVisibleCells().map(cell => (
-                    <TableCell key={cell.id}>
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))}
+              {table.getRowModel().rows.map(row => {
+                const isSelected = selectedId === row.original.id;
+                return (
+                  <Fragment key={row.id}>
+                    <TableRow
+                      className={cn(
+                        'cursor-pointer hover:bg-muted/50',
+                        isSelected && 'bg-muted'
+                      )}
+                      onClick={() => setSelectedId(row.original.id)}
+                      onDoubleClick={() =>
+                        setNodeDialog({
+                          open: true,
+                          parentId: row.original.parentId,
+                          node: row.original,
+                        })
+                      }
+                    >
+                      {row.getVisibleCells().map(cell => (
+                        <TableCell key={cell.id}>
+                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                    {isSelected && (
+                      <TableRow className="bg-muted/40 hover:bg-muted/40">
+                        <TableCell colSpan={columns.length}>
+                          <div className="flex flex-wrap items-center gap-2 py-1">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                setNodeDialog({ open: true, parentId: row.original.id, node: null })
+                              }
+                            >
+                              {t('bom.addChild')}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                setNodeDialog({
+                                  open: true,
+                                  parentId: row.original.parentId,
+                                  node: row.original,
+                                })
+                              }
+                            >
+                              {t('bom.editNode')}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleDelete(row.original)}
+                            >
+                              {t('bom.deleteNode')}
+                            </Button>
+                            <span className="ml-2 text-sm text-muted-foreground">
+                              {t('bom.selected', { name: row.original.nazwaOpis })}
+                            </span>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </Fragment>
+                );
+              })}
             </TableBody>
           </Table>
         </div>
@@ -453,38 +578,21 @@ export function BomTree({ ownerType, ownerId }: BomTreeProps) {
       <BomNodeDialog
         open={nodeDialog.open}
         onOpenChange={(open) => setNodeDialog(d => ({ ...d, open }))}
-        ownerType={ownerType}
-        ownerId={ownerId}
         parentId={nodeDialog.parentId}
         node={nodeDialog.node}
+        childNodes={
+          nodeDialog.node
+            ? nodes.filter(n => n.parentId === nodeDialog.node!.id)
+            : []
+        }
         groups={groups}
         kinds={kinds}
         operations={operations}
         kindSuppliers={kindSuppliers}
         suppliers={suppliers}
         materials={materials}
-        onSaved={() => void load()}
-      />
-
-      <CostModal
-        open={costNode !== null}
-        onOpenChange={(open) => {
-          if (!open) setCostNode(null);
-        }}
-        node={costNode}
-        onSaved={() => void load()}
-        onOpenSuppliers={(n) => setSupplierNode(n)}
-      />
-
-      <SupplierCompare
-        open={supplierNode !== null}
-        onOpenChange={(open) => {
-          if (!open) setSupplierNode(null);
-        }}
-        node={supplierNode}
-        suppliers={suppliers}
-        onSaved={() => void load()}
+        onCommit={handleCommitNode}
       />
     </div>
   );
-}
+});

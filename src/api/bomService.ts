@@ -1,20 +1,29 @@
 import { delay, getDb, saveDb, nextId } from './db';
-import type { BomNode, SupplierOffer } from '@/types/models';
+import type { BomNode, BomNodeOperation, SupplierOffer } from '@/types/models';
 import { recalcTree } from '@/services/costService';
-import { round2 } from '@/lib/money';
 
 function ownerNodesOf(node: BomNode, all: BomNode[]): BomNode[] {
   if (node.rfqId != null) return all.filter(n => n.rfqId === node.rfqId);
   return all.filter(n => n.templateId === node.templateId);
 }
 
-function persistRecalc(ownerNodes: BomNode[]): void {
+function persistRecalc(ownerNodes: BomNode[]): BomNode[] {
   const db = getDb();
   const recalced = recalcTree(ownerNodes);
   recalced.forEach(n => {
     const idx = db.bomNodes.findIndex(bn => bn.id === n.id);
     if (idx >= 0) db.bomNodes[idx] = n;
   });
+  return recalced;
+}
+
+function emptyOps(ids: number[] = []): BomNodeOperation[] {
+  return ids.map(operationId => ({
+    operationId,
+    cena: 0,
+    supplierId: null,
+    supplierOffers: [],
+  }));
 }
 
 export async function getTree(ownerType: 'rfq' | 'template', ownerId: number): Promise<BomNode[]> {
@@ -26,6 +35,35 @@ export async function getTree(ownerType: 'rfq' | 'template', ownerId: number): P
   return JSON.parse(JSON.stringify(nodes));
 }
 
+/** Replace entire owner tree (document save). Recalcs and persists. */
+export async function replaceTree(
+  ownerType: 'rfq' | 'template',
+  ownerId: number,
+  nodes: BomNode[]
+): Promise<BomNode[]> {
+  await delay();
+  const db = getDb();
+  db.bomNodes = db.bomNodes.filter(n =>
+    ownerType === 'rfq' ? n.rfqId !== ownerId : n.templateId !== ownerId
+  );
+
+  const copy = JSON.parse(JSON.stringify(nodes)) as BomNode[];
+  copy.forEach(n => {
+    if (ownerType === 'rfq') {
+      n.rfqId = ownerId;
+      n.templateId = null;
+    } else {
+      n.templateId = ownerId;
+      n.rfqId = null;
+    }
+  });
+
+  const recalced = recalcTree(copy);
+  db.bomNodes.push(...recalced);
+  saveDb();
+  return JSON.parse(JSON.stringify(recalced));
+}
+
 export async function addNode(input: {
   ownerType: 'rfq' | 'template';
   ownerId: number;
@@ -35,11 +73,13 @@ export async function addNode(input: {
   nazwaOpis: string;
   groupId: number;
   kindId: number;
-  operationIds?: number[];
+  operations?: BomNodeOperation[];
   materialId?: number | null;
   materialWymiary?: string;
+  materialCost?: number;
   procesySpecjalne?: boolean;
   dodatkowe?: string;
+  manualUnitCost?: number | null;
   supplierOffers?: SupplierOffer[];
 }): Promise<BomNode> {
   await delay();
@@ -64,12 +104,14 @@ export async function addNode(input: {
     nazwaOpis: input.nazwaOpis,
     groupId: input.groupId,
     kindId: input.kindId,
-    operationIds: input.operationIds ?? [],
+    operations: input.operations ?? emptyOps(),
     materialId: input.materialId ?? null,
     materialWymiary: input.materialWymiary ?? '',
+    materialCost: input.materialCost ?? 0,
     procesySpecjalne: input.procesySpecjalne ?? false,
     dodatkowe: input.dodatkowe ?? '',
-    costSource: 'ROLLUP',
+    manualUnitCost: input.manualUnitCost ?? null,
+    ownCost: 0,
     unitCost: 0,
     totalCost: 0,
     supplierOffers: input.supplierOffers ?? [],
@@ -123,13 +165,8 @@ export async function deleteNode(id: number): Promise<boolean> {
   return true;
 }
 
-/** Save supplier offers; final price → MANUAL unitCost. */
-export async function setSupplierOffers(nodeId: number, offers: SupplierOffer[]): Promise<BomNode | null> {
-  await delay();
-  const db = getDb();
-  const node = db.bomNodes.find(n => n.id === nodeId);
-  if (!node) return null;
-
+/** Apply supplier offers locally (caller persists via replaceTree / updateNode). */
+export function applyNodeSupplierOffers(node: BomNode, offers: SupplierOffer[]): BomNode {
   const limited = offers.slice(0, 3);
   let finalCount = 0;
   limited.forEach(o => {
@@ -138,19 +175,48 @@ export async function setSupplierOffers(nodeId: number, offers: SupplierOffer[])
       if (finalCount > 1) o.isFinal = false;
     }
   });
+  return { ...node, supplierOffers: limited };
+}
 
-  node.supplierOffers = limited;
+/** Final quote → operation.cena (+ optional supplierId). */
+export function applyOperationSupplierOffers(
+  op: BomNodeOperation,
+  offers: SupplierOffer[]
+): BomNodeOperation {
+  const limited = offers.slice(0, 3);
+  let finalCount = 0;
+  limited.forEach(o => {
+    if (o.isFinal) {
+      finalCount++;
+      if (finalCount > 1) o.isFinal = false;
+    }
+  });
   const finalOffer = limited.find(o => o.isFinal);
-  // Only promote to MANUAL when a real final price exists (preseed cena:0 stays ROLLUP).
-  if (finalOffer && finalOffer.cena > 0) {
-    node.costSource = 'MANUAL';
-    node.unitCost = round2(finalOffer.cena);
-  }
+  return {
+    ...op,
+    supplierOffers: limited,
+    cena: finalOffer ? finalOffer.cena : op.cena,
+    supplierId: finalOffer ? finalOffer.supplierId : op.supplierId,
+  };
+}
 
+/** Save supplier offers on node; final price feeds ownCost via recalc. */
+export async function setSupplierOffers(nodeId: number, offers: SupplierOffer[]): Promise<BomNode | null> {
+  await delay();
+  const db = getDb();
+  const node = db.bomNodes.find(n => n.id === nodeId);
+  if (!node) return null;
+
+  const updated = applyNodeSupplierOffers(node, offers);
   const idx = db.bomNodes.findIndex(n => n.id === nodeId);
-  db.bomNodes[idx] = node;
+  db.bomNodes[idx] = updated;
 
-  persistRecalc(ownerNodesOf(node, db.bomNodes));
+  persistRecalc(ownerNodesOf(updated, db.bomNodes));
   saveDb();
-  return db.bomNodes[db.bomNodes.findIndex(n => n.id === nodeId)];
+  return db.bomNodes[idx];
+}
+
+/** Allocate a new node id without persisting (working-copy add). */
+export function allocNodeId(): number {
+  return nextId('bomNodes');
 }

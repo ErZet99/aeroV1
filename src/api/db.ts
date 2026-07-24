@@ -55,7 +55,7 @@ export class ConflictError extends Error {
   }
 }
 
-const DB_KEY = 'aero-erp-db-v3';
+const DB_KEY = 'aero-erp-db-v4';
 
 function createInitialDb(): Db {
   const bomNodes = JSON.parse(JSON.stringify(seedBomNodes)) as BomNode[];
@@ -171,6 +171,23 @@ export function getDb(): Db {
     const stored = storageGet(DB_KEY);
     if (stored) {
       db = JSON.parse(stored) as Db;
+      // Stale localStorage from older prototype — backfill cascade tables.
+      if (!db.componentGroups?.length) {
+        db.componentGroups = JSON.parse(JSON.stringify(seedComponentGroups));
+      }
+      if (!db.componentKinds?.length) {
+        db.componentKinds = JSON.parse(JSON.stringify(seedComponentKinds));
+      }
+      if (!db.operations?.length) {
+        db.operations = JSON.parse(JSON.stringify(seedOperations));
+      }
+      if (!db.componentKindSuppliers?.length) {
+        db.componentKindSuppliers = JSON.parse(JSON.stringify(seedComponentKindSuppliers));
+      }
+      if (!db.suppliers?.length) {
+        db.suppliers = JSON.parse(JSON.stringify(seedSuppliers));
+      }
+      saveDb();
     } else {
       db = createInitialDb();
       saveDb();
@@ -195,6 +212,7 @@ export function nextId(collection: keyof Omit<Db, 'counters'>): number {
 /** Wipe persisted DB. Pass reload=true from UI; tests omit reload. */
 export function resetDb(reload = false): void {
   storageRemove(DB_KEY);
+  storageRemove('aero-erp-db-v3');
   storageRemove('aero-erp-db-v2');
   db = null;
   if (reload && typeof location !== 'undefined' && location.reload) {

@@ -1,4 +1,4 @@
-import type { Role, RfqStatus, OfferStatus, CostSource, RabatType, GroupType } from './enums';
+import type { Role, RfqStatus, OfferStatus, RabatType, GroupType } from './enums';
 
 export interface DictItem {
   id: number;
@@ -117,6 +117,14 @@ export interface SupplierOffer {
   isFinal: boolean;
 }
 
+/** Priced work step on a BOM node. Empty supplierId = in-house. */
+export interface BomNodeOperation {
+  operationId: number;
+  cena: number;
+  supplierId: number | null;
+  supplierOffers: SupplierOffer[];
+}
+
 export interface BomNode {
   id: number;
   rfqId: number | null;
@@ -128,14 +136,19 @@ export interface BomNode {
   nazwaOpis: string;
   groupId: number;
   kindId: number;
-  operationIds: number[];
+  operations: BomNodeOperation[];
   materialId: number | null;
   materialWymiary: string;
+  materialCost: number;
   procesySpecjalne: boolean;
   dodatkowe: string;
-  costSource: CostSource;
+  /** Quick-quote override; null = use breakdown. */
+  manualUnitCost: number | null;
+  /** materialCost + Σ op.cena, or final node supplier quote (ZAKUPOWA). */
+  ownCost: number;
   unitCost: number;
   totalCost: number;
+  /** Node-level quotes for ZAKUPOWA groups. */
   supplierOffers: SupplierOffer[];
   version: number;
 }
@@ -153,18 +166,18 @@ export interface OfferLine {
   lp: number;
   nazwaPrzyrzadu: string;
   ilosc: number;
-  sourceRfqId: number | null;   // provenance while SZKIC (live cost); kept after freeze but no longer read
-  sourceBomNodeId: number | null; // id of the root BomNode this line snapshots (null on legacy lines)
-  kosztWykonania: number;       // unit cost frozen from BOM root at line create / refresh
+  sourceRfqId: number | null;
+  sourceBomNodeId: number | null;
+  kosztWykonania: number;
   negocjacje: number;
-  cenaSprzedazy: number;        // unit sale price, user-entered
+  cenaSprzedazy: number;
 }
 
 export interface Offer {
   id: number;
   rfqId: number;
   numer: string;
-  revision: string;             // 'A','B','C',… — Etap 2: working copy + frozen revisions
+  revision: string;
   entityId: number;
   clientId: number;
   nrZamowieniaKlienta: string | null;

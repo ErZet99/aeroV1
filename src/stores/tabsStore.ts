@@ -10,6 +10,7 @@ export interface Tab {
   /** For 'bom' tabs: whose tree it is. Defaults to 'rfq' when absent. */
   ownerType?: 'rfq' | 'template';
   title: string;
+  dirty?: boolean;
 }
 
 interface TabsState {
@@ -18,6 +19,7 @@ interface TabsState {
   openTab: (tab: Omit<Tab, 'id'>) => void;
   closeTab: (id: string) => void;
   activateTab: (id: string) => void;
+  setTabDirty: (id: string, dirty: boolean) => void;
 }
 
 function makeTabId(tab: Omit<Tab, 'id'>): string {
@@ -36,7 +38,7 @@ export const useTabsStore = create<TabsState>((set, get) => ({
       return;
     }
     set(state => ({
-      tabs: [...state.tabs, { ...tab, id }],
+      tabs: [...state.tabs, { ...tab, id, dirty: false }],
       activeTabId: id,
     }));
   },
@@ -55,4 +57,9 @@ export const useTabsStore = create<TabsState>((set, get) => ({
   },
 
   activateTab: (id) => set({ activeTabId: id }),
+
+  setTabDirty: (id, dirty) =>
+    set(state => ({
+      tabs: state.tabs.map(t => (t.id === id ? { ...t, dirty } : t)),
+    })),
 }));

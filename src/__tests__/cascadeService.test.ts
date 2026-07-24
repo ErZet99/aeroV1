@@ -63,11 +63,11 @@ describe('cascadeService', () => {
   });
 
   it('resetAfterGroupChange clears kind and operations', () => {
-    expect(resetAfterGroupChange()).toEqual({ kindId: null, operationIds: [] });
+    expect(resetAfterGroupChange()).toEqual({ kindId: null, operations: [] });
   });
 
   it('resetAfterKindChange clears operations', () => {
-    expect(resetAfterKindChange()).toEqual({ operationIds: [] });
+    expect(resetAfterKindChange()).toEqual({ operations: [] });
   });
 
   it('groupTypeOf returns type', () => {

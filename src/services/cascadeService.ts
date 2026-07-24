@@ -42,11 +42,11 @@ export function groupTypeOf(
 }
 
 /** Changing group clears kind + third level. */
-export function resetAfterGroupChange(): { kindId: number | null; operationIds: number[] } {
-  return { kindId: null, operationIds: [] };
+export function resetAfterGroupChange(): { kindId: number | null; operations: [] } {
+  return { kindId: null, operations: [] };
 }
 
 /** Changing kind clears operations (purchasing: caller should re-preseed suppliers). */
-export function resetAfterKindChange(): { operationIds: number[] } {
-  return { operationIds: [] };
+export function resetAfterKindChange(): { operations: [] } {
+  return { operations: [] };
 }
