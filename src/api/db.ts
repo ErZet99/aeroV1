@@ -55,7 +55,7 @@ export class ConflictError extends Error {
   }
 }
 
-const DB_KEY = 'aero-erp-db-v4';
+const DB_KEY = 'aero-erp-db-v5';
 
 function createInitialDb(): Db {
   const bomNodes = JSON.parse(JSON.stringify(seedBomNodes)) as BomNode[];
@@ -120,7 +120,7 @@ function createInitialDb(): Db {
       deliveryTimes: 9,
       holidays: 9,
       rfqs: 11,
-      bomNodes: 17,
+      bomNodes: 22,
       templates: 3,
       offers: 3,
       offerLines: 3,
@@ -212,6 +212,7 @@ export function nextId(collection: keyof Omit<Db, 'counters'>): number {
 /** Wipe persisted DB. Pass reload=true from UI; tests omit reload. */
 export function resetDb(reload = false): void {
   storageRemove(DB_KEY);
+  storageRemove('aero-erp-db-v4');
   storageRemove('aero-erp-db-v3');
   storageRemove('aero-erp-db-v2');
   db = null;

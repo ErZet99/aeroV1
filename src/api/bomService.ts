@@ -71,8 +71,8 @@ export async function addNode(input: {
   numerDetalu: string;
   ilosc: number;
   nazwaOpis: string;
-  groupId: number;
-  kindId: number;
+  groupId: number | null;
+  kindId: number | null;
   operations?: BomNodeOperation[];
   materialId?: number | null;
   materialWymiary?: string;

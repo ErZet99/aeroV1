@@ -40,6 +40,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { isBomRoot, leanRootFields, validateBomNodeFields } from '@/services/bomEditor';
 import { SupplierCompare } from './SupplierCompare';
 
 const NONE_VALUE = '0';
@@ -134,14 +135,18 @@ export function BomNodeDialog({
   const [opCompareIdx, setOpCompareIdx] = useState<number | null>(null);
   const [nodeCompareOpen, setNodeCompareOpen] = useState(false);
 
+  const editingRoot = node !== null && isBomRoot(node);
+  const addingRoot = node === null && parentId === null;
+  const isRootDialog = editingRoot || addingRoot;
+
   useEffect(() => {
     if (!open) return;
     if (node) {
       setNumerDetalu(node.numerDetalu);
       setIlosc(String(node.ilosc));
       setNazwaOpis(node.nazwaOpis);
-      setGroupId(String(node.groupId));
-      setKindId(String(node.kindId));
+      setGroupId(node.groupId !== null ? String(node.groupId) : '');
+      setKindId(node.kindId !== null ? String(node.kindId) : '');
       setNodeOps(JSON.parse(JSON.stringify(node.operations)));
       setSupplierOffers(JSON.parse(JSON.stringify(node.supplierOffers)));
       setMaterialId(node.materialId !== null ? String(node.materialId) : NONE_VALUE);
@@ -154,7 +159,7 @@ export function BomNodeDialog({
       setNumerDetalu('');
       setIlosc('1');
       setNazwaOpis('');
-      setGroupId(groups[0] ? String(groups[0].id) : '');
+      setGroupId(isRootDialog ? '' : groups[0] ? String(groups[0].id) : '');
       setKindId('');
       setNodeOps([]);
       setSupplierOffers([]);
@@ -165,7 +170,7 @@ export function BomNodeDialog({
       setProcesySpecjalne(false);
       setDodatkowe('');
     }
-  }, [open, node, groups]);
+  }, [open, node, groups, isRootDialog]);
 
   const gId = Number(groupId) || 0;
   const kId = Number(kindId) || 0;
@@ -233,8 +238,8 @@ export function BomNodeDialog({
     numerDetalu,
     ilosc: Number(ilosc) || 1,
     nazwaOpis,
-    groupId: gId,
-    kindId: kId,
+    groupId: gId || null,
+    kindId: kId || null,
     operations: nodeOps,
     materialId: null,
     materialWymiary: '',
@@ -250,32 +255,44 @@ export function BomNodeDialog({
   };
   const breakdown = computedUnitCost(draftForBreakdown, childNodes);
 
-  const valid =
-    nazwaOpis.trim() !== '' &&
-    groupId !== '' &&
-    kindId !== '' &&
-    Number(ilosc) >= 1;
+  const valid = validateBomNodeFields({
+    isRoot: isRootDialog,
+    nazwaOpis,
+    ilosc: Number(ilosc) || 0,
+    groupId: groupId === '' ? null : gId,
+    kindId: kindId === '' ? null : kId,
+  });
 
   function handleSave() {
     if (!valid) return;
+    const manual =
+      manualUnitCost.trim() === '' ? null : round2(Number(manualUnitCost) || 0);
+
     onCommit({
       parentId,
       existing: node,
-      fields: {
-        numerDetalu,
-        ilosc: Number(ilosc),
-        nazwaOpis: nazwaOpis.trim(),
-        groupId: Number(groupId),
-        kindId: Number(kindId),
-        operations: groupType === 'OPERACYJNA' ? nodeOps : [],
-        materialId: materialId === NONE_VALUE ? null : Number(materialId),
-        materialWymiary,
-        materialCost: round2(Number(materialCost) || 0),
-        procesySpecjalne,
-        dodatkowe,
-        manualUnitCost: manualUnitCost.trim() === '' ? null : round2(Number(manualUnitCost) || 0),
-        supplierOffers: groupType === 'ZAKUPOWA' ? supplierOffers : [],
-      },
+      fields: isRootDialog
+        ? leanRootFields({
+            numerDetalu,
+            ilosc: Number(ilosc),
+            nazwaOpis: nazwaOpis.trim(),
+            manualUnitCost: manual,
+          })
+        : {
+            numerDetalu,
+            ilosc: Number(ilosc),
+            nazwaOpis: nazwaOpis.trim(),
+            groupId: Number(groupId),
+            kindId: Number(kindId),
+            operations: groupType === 'OPERACYJNA' ? nodeOps : [],
+            materialId: materialId === NONE_VALUE ? null : Number(materialId),
+            materialWymiary,
+            materialCost: round2(Number(materialCost) || 0),
+            procesySpecjalne,
+            dodatkowe,
+            manualUnitCost: manual,
+            supplierOffers: groupType === 'ZAKUPOWA' ? supplierOffers : [],
+          },
     });
     onOpenChange(false);
   }
@@ -292,7 +309,15 @@ export function BomNodeDialog({
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>{node ? t('bom.nodeDialogEdit') : t('bom.nodeDialogAdd')}</DialogTitle>
+            <DialogTitle>
+              {isRootDialog
+                ? node
+                  ? t('bom.rootDialogEdit')
+                  : t('bom.rootDialogAdd')
+                : node
+                  ? t('bom.nodeDialogEdit')
+                  : t('bom.nodeDialogAdd')}
+            </DialogTitle>
           </DialogHeader>
 
           <div className="flex max-h-[65vh] flex-col gap-3 overflow-y-auto">
@@ -318,6 +343,8 @@ export function BomNodeDialog({
               <Input id="bom-nazwa" value={nazwaOpis} onChange={(e) => setNazwaOpis(e.target.value)} />
             </div>
 
+            {!isRootDialog && (
+              <>
             <DictSelect
               id="bom-group"
               label={t('bom.grupa')}
@@ -467,6 +494,8 @@ export function BomNodeDialog({
                 />
               </div>
             </div>
+              </>
+            )}
 
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="bom-manual">{t('bom.manualPrice')}</Label>
@@ -488,6 +517,8 @@ export function BomNodeDialog({
               )}
             </div>
 
+            {!isRootDialog && (
+              <>
             <div className="flex items-center gap-2">
               <Checkbox
                 id="bom-procesy"
@@ -501,6 +532,8 @@ export function BomNodeDialog({
               <Label htmlFor="bom-dodatkowe">{t('bom.dodatkowe')}</Label>
               <Input id="bom-dodatkowe" value={dodatkowe} onChange={(e) => setDodatkowe(e.target.value)} />
             </div>
+              </>
+            )}
           </div>
 
           <DialogFooter>

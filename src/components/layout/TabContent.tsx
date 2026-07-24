@@ -25,6 +25,7 @@ function BomTab({ tab }: { tab: Tab }) {
     <BomTree
       ownerType={tab.ownerType ?? 'rfq'}
       ownerId={tab.entityId!}
+      title={tab.title}
       onDirtyChange={onDirty}
     />
   );

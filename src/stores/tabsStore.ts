@@ -59,7 +59,11 @@ export const useTabsStore = create<TabsState>((set, get) => ({
   activateTab: (id) => set({ activeTabId: id }),
 
   setTabDirty: (id, dirty) =>
-    set(state => ({
-      tabs: state.tabs.map(t => (t.id === id ? { ...t, dirty } : t)),
-    })),
+    set(state => {
+      const tab = state.tabs.find(t => t.id === id);
+      if (!tab || tab.dirty === dirty) return state;
+      return {
+        tabs: state.tabs.map(t => (t.id === id ? { ...t, dirty } : t)),
+      };
+    }),
 }));

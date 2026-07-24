@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { MoreHorizontalIcon } from 'lucide-react';
 import * as offerService from '@/api/offerService';
 import type { OfferLineDTO } from '@/api/offerService';
 import * as dictionaryService from '@/api/dictionaryService';
 import { useAuthStore } from '@/stores/authStore';
+import { useTabsStore } from '@/stores/tabsStore';
 import type { OfferStatus } from '@/types/enums';
 import type { Client, Entity, Offer } from '@/types/models';
 import { Badge } from '@/components/ui/badge';
@@ -12,12 +14,19 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { DocumentActionBar } from '@/components/layout/DocumentActionBar';
 import { OfferLines } from './OfferLines';
 import { DiscountControl } from './DiscountControl';
 import { OFFER_STATUS_BADGE } from './OfferGrid';
@@ -34,12 +43,23 @@ const LEGAL_MOVES: Partial<Record<OfferStatus, OfferStatus[]>> = {
 export function OfferDetail({ offerId }: OfferDetailProps) {
   const { t } = useTranslation();
   const role = useAuthStore(s => s.currentUser.role);
+  const setTabDirty = useTabsStore(s => s.setTabDirty);
+  const tabId = `offer:${offerId}::`;
 
   const [offer, setOffer] = useState<Offer | null>(null);
   const [lines, setLines] = useState<OfferLineDTO[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
   const [entities, setEntities] = useState<Entity[]>([]);
   const [nrZamowienia, setNrZamowienia] = useState('');
+  const [nrSnap, setNrSnap] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+
+  const dirty = nrZamowienia !== nrSnap;
+
+  useEffect(() => {
+    setTabDirty(tabId, dirty);
+  }, [dirty, setTabDirty, tabId]);
 
   const load = useCallback(async () => {
     const [detail, clientData, entityData] = await Promise.all([
@@ -52,7 +72,9 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
     if (detail) {
       setOffer(detail.offer);
       setLines(detail.lines);
-      setNrZamowienia(detail.offer.nrZamowieniaKlienta ?? '');
+      const nr = detail.offer.nrZamowieniaKlienta ?? '';
+      setNrZamowienia(nr);
+      setNrSnap(nr);
     }
   }, [offerId, role]);
 
@@ -91,89 +113,134 @@ export function OfferDetail({ offerId }: OfferDetailProps) {
     await load();
   }
 
-  async function commitNrZamowienia() {
-    if (!offer) return;
-    const value = nrZamowienia.trim() === '' ? null : nrZamowienia.trim();
-    if (value === offer.nrZamowieniaKlienta) return;
-    await offerService.update(offer.id, { nrZamowieniaKlienta: value });
-    await load();
+  async function handleSave() {
+    if (!offer || saving) return;
+    setSaving(true);
+    try {
+      const value = nrZamowienia.trim() === '' ? null : nrZamowienia.trim();
+      await offerService.update(offer.id, { nrZamowieniaKlienta: value });
+      const now = new Date();
+      setSavedAt(
+        `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+      );
+      await load();
+    } finally {
+      setSaving(false);
+    }
   }
 
   const clientName = clients.find(c => c.id === offer.clientId)?.name ?? '';
   const entityName = entities.find(en => en.id === offer.entityId)?.name ?? '';
 
-  return (
-    <div className="flex max-w-4xl flex-col gap-4 p-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <h2 className="text-lg font-semibold">{offer.numer}</h2>
-          <Badge variant="outline">{offer.revision}</Badge>
-          <Badge variant={badge.variant} className={badge.className}>
-            {t(`offerStatuses.${offer.status}`)}
-          </Badge>
-        </div>
-        {isSzkic && (
-          <Button onClick={() => void handleFinalize()}>{t('offer.finalize')}</Button>
-        )}
-      </div>
+  const title: ReactNode = (
+    <span className="flex items-center gap-2">
+      <span>{offer.numer}</span>
+      <Badge variant="outline">{offer.revision}</Badge>
+      <Badge variant={badge.variant} className={badge.className}>
+        {t(`offerStatuses.${offer.status}`)}
+      </Badge>
+    </span>
+  );
 
-      <div className="flex flex-wrap items-end gap-6 text-sm">
-        <div className="flex flex-col gap-0.5">
-          <span className="text-xs text-muted-foreground">{t('offer.podmiot')}</span>
-          <span>{entityName}</span>
-        </div>
-        <div className="flex flex-col gap-0.5">
-          <span className="text-xs text-muted-foreground">{t('offer.klient')}</span>
-          <span>{clientName}</span>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="offer-nr-zamowienia" className="text-xs text-muted-foreground">
-            {t('offer.nrZamowienia')}
-          </Label>
-          <Input
-            id="offer-nr-zamowienia"
-            className="w-52"
-            value={nrZamowienia}
-            onChange={(e) => setNrZamowienia(e.target.value)}
-            onBlur={() => void commitNrZamowienia()}
-          />
-        </div>
-        {legalMoves.length > 0 && (
+  const secondaryActions = (
+    <>
+      <Button variant="outline" disabled title={t('common.underConstruction')}>
+        {t('offer.saveAsRevision')}
+      </Button>
+      <Button variant="outline" disabled title={t('common.underConstruction')}>
+        {t('offer.generatePdf')}
+      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <Button variant="outline" size="icon" aria-label={t('offer.moreActions')} />
+          }
+        >
+          <MoreHorizontalIcon />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem disabled>{t('offer.globalMargin')}</DropdownMenuItem>
+          <DropdownMenuItem disabled>{t('offer.rabat')}</DropdownMenuItem>
+          <DropdownMenuItem disabled>{t('offer.markSent')}</DropdownMenuItem>
+          {isSzkic && (
+            <DropdownMenuItem onClick={() => void handleFinalize()}>
+              {t('offer.finalize')}
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </>
+  );
+
+  return (
+    <div className="flex min-w-0 flex-col">
+      <DocumentActionBar
+        title={title}
+        dirty={dirty}
+        saving={saving}
+        savedAt={savedAt}
+        onSave={() => void handleSave()}
+        secondaryActions={secondaryActions}
+      />
+
+      <div className="flex max-w-4xl flex-col gap-4 p-4">
+        <div className="flex flex-wrap items-end gap-6 text-sm">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-xs text-muted-foreground">{t('offer.podmiot')}</span>
+            <span>{entityName}</span>
+          </div>
+          <div className="flex flex-col gap-0.5">
+            <span className="text-xs text-muted-foreground">{t('offer.klient')}</span>
+            <span>{clientName}</span>
+          </div>
           <div className="flex flex-col gap-1.5">
-            <span className="text-xs text-muted-foreground">{t('offer.status')}</span>
-            <Select
-              items={statusItems}
-              value={offer.status}
-              onValueChange={(v) => void handleStatusChange(String(v))}
-            >
-              <SelectTrigger className="w-44">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {statusItems.map(item => (
-                  <SelectItem key={item.value} value={item.value}>
-                    {item.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Label htmlFor="offer-nr-zamowienia" className="text-xs text-muted-foreground">
+              {t('offer.nrZamowienia')}
+            </Label>
+            <Input
+              id="offer-nr-zamowienia"
+              className="w-52"
+              value={nrZamowienia}
+              onChange={(e) => setNrZamowienia(e.target.value)}
+            />
+          </div>
+          {legalMoves.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs text-muted-foreground">{t('offer.status')}</span>
+              <Select
+                items={statusItems}
+                value={offer.status}
+                onValueChange={(v) => void handleStatusChange(String(v))}
+              >
+                <SelectTrigger className="w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {statusItems.map(item => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+        </div>
+
+        {!isSzkic && (
+          <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300">
+            {t('offer.revisionNotice')}
           </div>
         )}
+
+        <Separator />
+
+        <OfferLines lines={lines} status={offer.status} onChanged={() => void load()} />
+
+        <Separator />
+
+        <DiscountControl offer={offer} total={total} onApplied={() => void load()} />
       </div>
-
-      {!isSzkic && (
-        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300">
-          {t('offer.revisionNotice')}
-        </div>
-      )}
-
-      <Separator />
-
-      <OfferLines lines={lines} status={offer.status} onChanged={() => void load()} />
-
-      <Separator />
-
-      <DiscountControl offer={offer} total={total} onApplied={() => void load()} />
     </div>
   );
 }

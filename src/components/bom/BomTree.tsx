@@ -1,10 +1,9 @@
 import {
   Fragment,
-  forwardRef,
   useCallback,
   useEffect,
-  useImperativeHandle,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -32,11 +31,14 @@ import type {
   Template,
 } from '@/types/models';
 import { computedUnitCost, recalcTree } from '@/services/costService';
+import {
+  activeCardSubtree,
+  resolveBomRowGesture,
+} from '@/services/bomEditor';
 import { formatPln } from '@/lib/money';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Select,
   SelectContent,
@@ -52,21 +54,16 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { DocumentActionBar } from '@/components/layout/DocumentActionBar';
 import { BomNodeDialog } from './BomNodeDialog';
 
 type TreeNode = BomNode & { children: TreeNode[]; lpPath: string };
 
-export interface BomTreeHandle {
-  save: () => Promise<void>;
-  isDirty: () => boolean;
-  getRoots: () => BomNode[];
-}
-
 interface BomTreeProps {
   ownerType: 'rfq' | 'template';
   ownerId: number;
-  /** When true, hide own Save — parent document Save commits via ref. */
-  embedded?: boolean;
+  /** Document title shown in the sticky action bar. */
+  title?: string;
   onDirtyChange?: (dirty: boolean) => void;
 }
 
@@ -99,10 +96,7 @@ function snapshotOf(nodes: BomNode[]): string {
 
 const columnHelper = createColumnHelper<TreeNode>();
 
-export const BomTree = forwardRef<BomTreeHandle, BomTreeProps>(function BomTree(
-  { ownerType, ownerId, embedded = false, onDirtyChange },
-  ref
-) {
+export function BomTree({ ownerType, ownerId, title, onDirtyChange }: BomTreeProps) {
   const { t } = useTranslation();
 
   const [nodes, setNodes] = useState<BomNode[]>([]);
@@ -125,12 +119,33 @@ export const BomTree = forwardRef<BomTreeHandle, BomTreeProps>(function BomTree(
     parentId: number | null;
     node: BomNode | null;
   }>({ open: false, parentId: null, node: null });
+  const [templatePickerKey, setTemplatePickerKey] = useState(0);
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
 
   const dirty = snapshotOf(nodes) !== committed;
 
+  const onDirtyChangeRef = useRef(onDirtyChange);
+  onDirtyChangeRef.current = onDirtyChange;
+
   useEffect(() => {
-    onDirtyChange?.(dirty);
-  }, [dirty, onDirtyChange, nodes]);
+    return () => {
+      if (clickTimerRef.current !== null) clearTimeout(clickTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    onDirtyChangeRef.current?.(dirty);
+  }, [dirty]);
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setSelectedId(null);
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   const applyLocal = useCallback((next: BomNode[]) => {
     setNodes(recalcTree(next));
@@ -178,24 +193,21 @@ export const BomTree = forwardRef<BomTreeHandle, BomTreeProps>(function BomTree(
     }
   }, [ownerType, ownerId, nodes]);
 
-  useImperativeHandle(
-    ref,
-    () => ({
-      save,
-      isDirty: () => snapshotOf(nodes) !== committed,
-      getRoots: () => nodes.filter(n => n.parentId === null).sort((a, b) => a.lp - b.lp),
-    }),
-    [save, nodes, committed]
+  const treeData = useMemo(
+    () => buildTree(activeCardSubtree(nodes, activeRootId)),
+    [nodes, activeRootId]
   );
-
-  const treeData = useMemo(() => {
-    const all = buildTree(nodes);
-    if (activeRootId === null) return all;
-    return all.filter(r => r.id === activeRootId);
-  }, [nodes, activeRootId]);
   const roots = useMemo(
     () => nodes.filter(n => n.parentId === null).sort((a, b) => a.lp - b.lp),
     [nodes]
+  );
+  const activeRoot = useMemo(
+    () => roots.find(r => r.id === activeRootId) ?? null,
+    [roots, activeRootId]
+  );
+  const activeRootChildCount = useMemo(
+    () => (activeRootId === null ? 0 : nodes.filter(n => n.parentId === activeRootId).length),
+    [nodes, activeRootId]
   );
 
   useEffect(() => {
@@ -263,11 +275,17 @@ export const BomTree = forwardRef<BomTreeHandle, BomTreeProps>(function BomTree(
       }),
       columnHelper.accessor('groupId', {
         header: t('bom.grupa'),
-        cell: info => labelMaps.groups.get(info.getValue()) ?? '—',
+        cell: info => {
+          const id = info.getValue();
+          return id !== null ? (labelMaps.groups.get(id) ?? '—') : t('bom.none');
+        },
       }),
       columnHelper.accessor('kindId', {
         header: t('bom.rodzaj'),
-        cell: info => labelMaps.kinds.get(info.getValue()) ?? '—',
+        cell: info => {
+          const id = info.getValue();
+          return id !== null ? (labelMaps.kinds.get(id) ?? '—') : t('bom.none');
+        },
       }),
       columnHelper.accessor('operations', {
         header: t('bom.operacje'),
@@ -352,6 +370,44 @@ export const BomTree = forwardRef<BomTreeHandle, BomTreeProps>(function BomTree(
     getExpandedRowModel: getExpandedRowModel(),
   });
 
+  function openEdit(node: BomNode) {
+    setNodeDialog({ open: true, parentId: node.parentId, node });
+  }
+
+  function openAddChild(parentId: number) {
+    setNodeDialog({ open: true, parentId, node: null });
+  }
+
+  function applyRowGesture(gesture: 'click' | 'dblclick', rowNode: BomNode) {
+    const outcome = resolveBomRowGesture(gesture, rowNode.id, selectedIdRef.current);
+    if (outcome.type === 'deselect') {
+      setSelectedId(null);
+      return;
+    }
+    if (outcome.type === 'select') {
+      setSelectedId(outcome.nodeId);
+      return;
+    }
+    openEdit(rowNode);
+  }
+
+  /** Delay single-click toggle so dblclick can cancel it (browsers fire click before dblclick). */
+  function handleRowClick(rowNode: BomNode) {
+    if (clickTimerRef.current !== null) clearTimeout(clickTimerRef.current);
+    clickTimerRef.current = setTimeout(() => {
+      clickTimerRef.current = null;
+      applyRowGesture('click', rowNode);
+    }, 250);
+  }
+
+  function handleRowDblClick(rowNode: BomNode) {
+    if (clickTimerRef.current !== null) {
+      clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+    }
+    applyRowGesture('dblclick', rowNode);
+  }
+
   function handleDelete(node: BomNode) {
     if (!window.confirm(t('bom.confirmDeleteSubtree'))) return;
     const toDelete = new Set([node.id]);
@@ -427,161 +483,177 @@ export const BomTree = forwardRef<BomTreeHandle, BomTreeProps>(function BomTree(
   }
 
   const templateOptions = templates.map(tpl => ({ value: String(tpl.id), label: tpl.name }));
-  const isEmpty = nodes.length === 0;
 
   return (
-    <div className={cn('flex flex-col gap-4', embedded ? 'p-0' : 'p-4')}>
-      <div className="flex flex-wrap items-center gap-3">
-        <Button onClick={() => setNodeDialog({ open: true, parentId: null, node: null })}>
-          {t('bom.addPrzyrzad')}
-        </Button>
-        {ownerType === 'rfq' && templateOptions.length > 0 && (
-          <Select
-            items={templateOptions}
-            value={null}
-            onValueChange={(v) => void handleApplyTemplate(String(v))}
-          >
-            <SelectTrigger className="w-56">
-              <SelectValue placeholder={t('bom.fromTemplate')} />
-            </SelectTrigger>
-            <SelectContent>
-              {templateOptions.map(opt => (
-                <SelectItem key={opt.value} value={opt.value}>
-                  {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
-        {!embedded && (
+    <div className="flex min-w-0 flex-col">
+      <DocumentActionBar
+        title={title ?? t('rfq.wycenaBom')}
+        dirty={dirty}
+        saving={saving}
+        savedAt={savedAt}
+        onSave={() => void save()}
+      />
+
+      <div className="flex flex-col gap-4 p-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <Button onClick={() => setNodeDialog({ open: true, parentId: null, node: null })}>
+            {t('bom.addPrzyrzad')}
+          </Button>
+          {ownerType === 'rfq' && templateOptions.length > 0 && (
+            <Select
+              key={templatePickerKey}
+              items={templateOptions}
+              onValueChange={(v) => {
+                if (v == null) return;
+                void handleApplyTemplate(String(v));
+                // Remount so the trigger returns to placeholder (action picker, not sticky value).
+                setTemplatePickerKey(k => k + 1);
+              }}
+            >
+              <SelectTrigger className="w-56">
+                <SelectValue placeholder={t('bom.fromTemplate')} />
+              </SelectTrigger>
+              <SelectContent>
+                {templateOptions.map(opt => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        </div>
+
+        {roots.length > 0 && (
           <>
-            <Button disabled={!dirty || saving} onClick={() => void save()}>
-              {t('common.save')}
-            </Button>
-            {savedAt && (
-              <span className="text-sm text-muted-foreground">
-                {t('common.savedAt', { time: savedAt })}
-              </span>
+            <div className="flex flex-wrap gap-2">
+              {roots.map(root => (
+                <button
+                  key={root.id}
+                  type="button"
+                  className={cn(
+                    'flex min-h-10 items-center gap-2 rounded-full border px-3 py-1.5 text-left text-sm transition-colors',
+                    activeRootId === root.id
+                      ? 'border-primary bg-primary/5 ring-1 ring-primary'
+                      : 'border-border hover:bg-muted/50'
+                  )}
+                  onClick={() => setActiveRootId(root.id)}
+                  onDoubleClick={() => openEdit(root)}
+                >
+                  <span className="text-xs text-muted-foreground">{t('bom.productPillLabel')}</span>
+                  <span className="font-medium">{root.nazwaOpis}</span>
+                  <span className="tabular-nums text-muted-foreground">
+                    {formatPln(root.totalCost)}
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            {activeRoot && (
+              <div className="flex flex-wrap items-center justify-between gap-3 border-y py-2">
+                <div className="min-w-0 text-sm">
+                  <span className="font-medium">{activeRoot.nazwaOpis}</span>
+                  <span className="text-muted-foreground">
+                    {' · '}
+                    {formatPln(activeRoot.totalCost)}
+                    {' · '}
+                    {t('bom.pozycjeCount', { count: activeRootChildCount })}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" onClick={() => openAddChild(activeRoot.id)}>
+                    {t('bom.addChild')}
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => openEdit(activeRoot)}>
+                    {t('bom.editNode')}
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => handleDelete(activeRoot)}>
+                    {t('bom.deleteNode')}
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {treeData.length === 0 ? (
+              <div className="p-8 text-muted-foreground">{t('bom.emptySubtree')}</div>
+            ) : (
+              <div className="max-h-[calc(100vh-260px)] overflow-auto overflow-x-auto rounded-md border">
+                <Table className="min-w-[1500px]">
+                  <TableHeader className="sticky top-0 z-10 bg-background">
+                    {table.getHeaderGroups().map(headerGroup => (
+                      <TableRow key={headerGroup.id}>
+                        {headerGroup.headers.map(header => (
+                          <TableHead key={header.id} className="whitespace-nowrap">
+                            {flexRender(header.column.columnDef.header, header.getContext())}
+                          </TableHead>
+                        ))}
+                      </TableRow>
+                    ))}
+                  </TableHeader>
+                  <TableBody>
+                    {table.getRowModel().rows.map(row => {
+                      const isSelected = selectedId === row.original.id;
+                      return (
+                        <Fragment key={row.id}>
+                          <TableRow
+                            className={cn(
+                              'cursor-pointer hover:bg-muted/50',
+                              isSelected && 'bg-muted'
+                            )}
+                            onClick={(e) => {
+                              if (e.detail !== 1) return;
+                              handleRowClick(row.original);
+                            }}
+                            onDoubleClick={() => handleRowDblClick(row.original)}
+                          >
+                            {row.getVisibleCells().map(cell => (
+                              <TableCell key={cell.id}>
+                                {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                              </TableCell>
+                            ))}
+                          </TableRow>
+                          {isSelected && (
+                            <TableRow className="bg-muted/40 hover:bg-muted/40">
+                              <TableCell colSpan={columns.length}>
+                                <div className="flex flex-wrap items-center gap-2 py-1">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => openAddChild(row.original.id)}
+                                  >
+                                    {t('bom.addChild')}
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => openEdit(row.original)}
+                                  >
+                                    {t('bom.editNode')}
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => handleDelete(row.original)}
+                                  >
+                                    {t('bom.deleteNode')}
+                                  </Button>
+                                  <span className="ml-2 text-sm text-muted-foreground">
+                                    {t('bom.selected', { name: row.original.nazwaOpis })}
+                                  </span>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </Fragment>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
             )}
           </>
         )}
       </div>
-
-      {roots.length > 0 && (
-        <div className="flex flex-wrap gap-3">
-          {roots.map(root => (
-            <Card
-              key={root.id}
-              className={cn(
-                'min-w-56 cursor-pointer',
-                activeRootId === root.id && 'ring-2 ring-primary'
-              )}
-              onClick={() => setActiveRootId(root.id)}
-            >
-              <CardHeader>
-                <CardTitle>{root.nazwaOpis}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex flex-col">
-                  <span className="text-xs text-muted-foreground">{t('bom.kosztWykonania')}</span>
-                  <span className="text-lg font-semibold tabular-nums">
-                    {formatPln(root.totalCost)}
-                  </span>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
-
-      {isEmpty ? (
-        <div className="p-8 text-muted-foreground">{t('bom.emptyTree')}</div>
-      ) : (
-        <div className="max-h-[calc(100vh-260px)] overflow-auto overflow-x-auto rounded-md border">
-          <Table className="min-w-[1500px]">
-            <TableHeader className="sticky top-0 z-10 bg-background">
-              {table.getHeaderGroups().map(headerGroup => (
-                <TableRow key={headerGroup.id}>
-                  {headerGroup.headers.map(header => (
-                    <TableHead key={header.id} className="whitespace-nowrap">
-                      {flexRender(header.column.columnDef.header, header.getContext())}
-                    </TableHead>
-                  ))}
-                </TableRow>
-              ))}
-            </TableHeader>
-            <TableBody>
-              {table.getRowModel().rows.map(row => {
-                const isSelected = selectedId === row.original.id;
-                return (
-                  <Fragment key={row.id}>
-                    <TableRow
-                      className={cn(
-                        'cursor-pointer hover:bg-muted/50',
-                        isSelected && 'bg-muted'
-                      )}
-                      onClick={() => setSelectedId(row.original.id)}
-                      onDoubleClick={() =>
-                        setNodeDialog({
-                          open: true,
-                          parentId: row.original.parentId,
-                          node: row.original,
-                        })
-                      }
-                    >
-                      {row.getVisibleCells().map(cell => (
-                        <TableCell key={cell.id}>
-                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                        </TableCell>
-                      ))}
-                    </TableRow>
-                    {isSelected && (
-                      <TableRow className="bg-muted/40 hover:bg-muted/40">
-                        <TableCell colSpan={columns.length}>
-                          <div className="flex flex-wrap items-center gap-2 py-1">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() =>
-                                setNodeDialog({ open: true, parentId: row.original.id, node: null })
-                              }
-                            >
-                              {t('bom.addChild')}
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() =>
-                                setNodeDialog({
-                                  open: true,
-                                  parentId: row.original.parentId,
-                                  node: row.original,
-                                })
-                              }
-                            >
-                              {t('bom.editNode')}
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleDelete(row.original)}
-                            >
-                              {t('bom.deleteNode')}
-                            </Button>
-                            <span className="ml-2 text-sm text-muted-foreground">
-                              {t('bom.selected', { name: row.original.nazwaOpis })}
-                            </span>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </Fragment>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </div>
-      )}
 
       <BomNodeDialog
         open={nodeDialog.open}
@@ -603,4 +675,4 @@ export const BomTree = forwardRef<BomTreeHandle, BomTreeProps>(function BomTree(
       />
     </div>
   );
-});
+}

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as rfqService from '@/api/rfqService';
 import type { RfqWithComputed } from '@/api/rfqService';
+import * as bomService from '@/api/bomService';
 import * as dictionaryService from '@/api/dictionaryService';
 import * as offerService from '@/api/offerService';
 import { getDb } from '@/api/db';
@@ -10,6 +11,8 @@ import { useAuthStore } from '@/stores/authStore';
 import { RFQ_STATUSES } from '@/types/enums';
 import type { RfqStatus } from '@/types/enums';
 import type { BomNode, Client, DictItem, Entity, Offer, User } from '@/types/models';
+import { recalcTree } from '@/services/costService';
+import { formatPln } from '@/lib/money';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
@@ -30,7 +33,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { BomTree, type BomTreeHandle } from '@/components/bom/BomTree';
+import { DocumentActionBar } from '@/components/layout/DocumentActionBar';
 
 interface RfqDetailProps {
   rfqId: number;
@@ -64,13 +67,17 @@ function SelectRow({ id, label, value, options, onChange }: SelectRowProps) {
   );
 }
 
+function wycenaTabId(rfqId: number): string {
+  return `bom:${rfqId}::rfq`;
+}
+
 export function RfqDetail({ rfqId }: RfqDetailProps) {
   const { t } = useTranslation();
   const openTab = useTabsStore(s => s.openTab);
   const setTabDirty = useTabsStore(s => s.setTabDirty);
+  const activeTabId = useTabsStore(s => s.activeTabId);
   const currentUser = useAuthStore(s => s.currentUser);
   const tabId = `rfq:${rfqId}::`;
-  const bomRef = useRef<BomTreeHandle>(null);
 
   const [rfq, setRfq] = useState<RfqWithComputed | null>(null);
   const [clients, setClients] = useState<Client[]>([]);
@@ -96,14 +103,16 @@ export function RfqDetail({ rfqId }: RfqDetailProps) {
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const [headerDirty, setHeaderDirty] = useState(false);
-  const [bomDirty, setBomDirty] = useState(false);
   const [headerSnap, setHeaderSnap] = useState('');
 
-  const dirty = headerDirty || bomDirty;
-
   useEffect(() => {
-    setTabDirty(tabId, dirty);
-  }, [dirty, setTabDirty, tabId]);
+    setTabDirty(tabId, headerDirty);
+  }, [headerDirty, setTabDirty, tabId]);
+
+  const loadSavedRoots = useCallback(async () => {
+    const nodes = recalcTree(await bomService.getTree('rfq', rfqId));
+    setBomRoots(nodes.filter(n => n.parentId === null).sort((a, b) => a.lp - b.lp));
+  }, [rfqId]);
 
   const load = useCallback(async () => {
     const [rfqData, clientData, entityData, inquiryTypeData, certificateData, offer] =
@@ -122,6 +131,7 @@ export function RfqDetail({ rfqId }: RfqDetailProps) {
     setCertificates(certificateData as DictItem[]);
     setUsers(getDb().users.filter(u => u.active));
     setExistingOffer(offer);
+    await loadSavedRoots();
 
     if (rfqData) {
       setRfq(rfqData);
@@ -150,11 +160,18 @@ export function RfqDetail({ rfqId }: RfqDetailProps) {
       setHeaderSnap(snap);
       setHeaderDirty(false);
     }
-  }, [rfqId]);
+  }, [rfqId, loadSavedRoots]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Refresh quotation summary when returning to the header tab after editing wycena.
+  useEffect(() => {
+    if (activeTabId === tabId) {
+      void loadSavedRoots();
+    }
+  }, [activeTabId, tabId, loadSavedRoots]);
 
   useEffect(() => {
     if (!rfq) return;
@@ -190,6 +207,16 @@ export function RfqDetail({ rfqId }: RfqDetailProps) {
     setCertificateIds(ids => (checked ? [...ids, id] : ids.filter(i => i !== id)));
   }
 
+  function openWycena() {
+    if (!rfq) return;
+    openTab({
+      type: 'bom',
+      entityId: rfqId,
+      ownerType: 'rfq',
+      title: t('rfq.wycenaTabTitle', { numer: rfq.numer }),
+    });
+  }
+
   async function handleSave() {
     if (saving) return;
     setSaving(true);
@@ -206,33 +233,25 @@ export function RfqDetail({ rfqId }: RfqDetailProps) {
         wymaganaDokumentacja,
         certificateIds,
       });
-      if (bomRef.current?.isDirty()) {
-        await bomRef.current.save();
-      }
       const now = new Date();
       setSavedAt(
         `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
       );
       await load();
-      setBomRoots(bomRef.current?.getRoots() ?? []);
     } finally {
       setSaving(false);
     }
   }
 
-  function openCreateOfferDialog() {
-    if (dirty) {
-      if (!window.confirm(t('bom.saveFirst'))) return;
-      void (async () => {
-        await handleSave();
-        const roots = bomRef.current?.getRoots() ?? [];
-        setBomRoots(roots);
-        setSelectedRootIds(roots.map(r => r.id));
-        setPickOpen(true);
-      })();
+  async function openCreateOfferDialog() {
+    const wycenaDirty = useTabsStore.getState().tabs.find(tab => tab.id === wycenaTabId(rfqId))?.dirty;
+    if (wycenaDirty) {
+      window.alert(t('bom.saveFirst'));
+      openWycena();
       return;
     }
-    const roots = bomRef.current?.getRoots() ?? bomRoots;
+    const nodes = recalcTree(await bomService.getTree('rfq', rfqId));
+    const roots = nodes.filter(n => n.parentId === null).sort((a, b) => a.lp - b.lp);
     setBomRoots(roots);
     setSelectedRootIds(roots.map(r => r.id));
     setPickOpen(true);
@@ -255,39 +274,44 @@ export function RfqDetail({ rfqId }: RfqDetailProps) {
   }
 
   const hasBom = bomRoots.length > 0;
+  const totalKoszt = bomRoots.reduce((sum, root) => sum + root.totalCost, 0);
 
   return (
-    <div className="flex min-w-0 flex-col gap-4 p-4">
-      <div className="flex max-w-2xl flex-col gap-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">{rfq.numer}</h2>
-          <div className="flex gap-2">
-            {existingOffer ? (
-              <Button
-                variant="outline"
-                onClick={() =>
-                  openTab({
-                    type: 'offer',
-                    entityId: existingOffer.id,
-                    title: existingOffer.numer,
-                  })
-                }
-              >
-                {t('rfq.otworzOferte', { numer: existingOffer.numer })}
-              </Button>
-            ) : (
-              <Button
-                variant="outline"
-                disabled={!hasBom}
-                title={!hasBom ? t('rfq.brakBom') : undefined}
-                onClick={openCreateOfferDialog}
-              >
-                {t('rfq.utworzOferte')}
-              </Button>
-            )}
-          </div>
-        </div>
+    <div className="flex min-w-0 flex-col">
+      <DocumentActionBar
+        title={rfq.numer}
+        dirty={headerDirty}
+        saving={saving}
+        savedAt={savedAt}
+        onSave={() => void handleSave()}
+        secondaryActions={
+          existingOffer ? (
+            <Button
+              variant="outline"
+              onClick={() =>
+                openTab({
+                  type: 'offer',
+                  entityId: existingOffer.id,
+                  title: existingOffer.numer,
+                })
+              }
+            >
+              {t('rfq.otworzOferte', { numer: existingOffer.numer })}
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              disabled={!hasBom}
+              title={!hasBom ? t('rfq.brakBom') : undefined}
+              onClick={() => void openCreateOfferDialog()}
+            >
+              {t('rfq.utworzOferte')}
+            </Button>
+          )
+        }
+      />
 
+      <div className="flex max-w-2xl flex-col gap-4 p-4">
         <div className="flex flex-wrap gap-6 text-sm text-muted-foreground">
           <span>
             {t('rfq.dataZapytania')}: {rfq.dataZapytania}
@@ -403,32 +427,24 @@ export function RfqDetail({ rfqId }: RfqDetailProps) {
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <Button disabled={!dirty || saving} onClick={() => void handleSave()}>
-            {t('common.save')}
-          </Button>
-          {savedAt && (
-            <span className="text-sm text-muted-foreground">
-              {t('common.savedAt', { time: savedAt })}
-            </span>
-          )}
+        <Separator />
+
+        <div className="flex flex-col gap-3">
+          <h3 className="text-base font-semibold">{t('rfq.wycenaBom')}</h3>
+          <div className="flex flex-wrap items-end gap-6 text-sm">
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs text-muted-foreground">{t('rfq.wycenaRootCount')}</span>
+              <span className="tabular-nums">{bomRoots.length}</span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs text-muted-foreground">{t('bom.kosztWykonania')}</span>
+              <span className="tabular-nums">{formatPln(totalKoszt)}</span>
+            </div>
+          </div>
+          <div>
+            <Button onClick={openWycena}>{t('rfq.otworzWycene')}</Button>
+          </div>
         </div>
-      </div>
-
-      <Separator />
-
-      <div>
-        <h3 className="mb-3 text-base font-semibold">{t('rfq.wycenaBom')}</h3>
-        <BomTree
-          ref={bomRef}
-          ownerType="rfq"
-          ownerId={rfqId}
-          embedded
-          onDirtyChange={(d) => {
-            setBomDirty(d);
-            setBomRoots(bomRef.current?.getRoots() ?? []);
-          }}
-        />
       </div>
 
       <Dialog open={pickOpen} onOpenChange={setPickOpen}>
@@ -437,7 +453,7 @@ export function RfqDetail({ rfqId }: RfqDetailProps) {
             <DialogTitle>{t('rfq.wybierzProdukty')}</DialogTitle>
           </DialogHeader>
           <div className="flex flex-col gap-2">
-            {(bomRef.current?.getRoots() ?? bomRoots).map(root => (
+            {bomRoots.map(root => (
               <label key={root.id} className="flex items-center gap-2 text-sm">
                 <Checkbox
                   checked={selectedRootIds.includes(root.id)}

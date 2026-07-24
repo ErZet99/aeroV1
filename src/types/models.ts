@@ -134,8 +134,10 @@ export interface BomNode {
   numerDetalu: string;
   ilosc: number;
   nazwaOpis: string;
-  groupId: number;
-  kindId: number;
+  /** Null on root products — roots carry no classification (01-DOMAIN.md §4). */
+  groupId: number | null;
+  /** Null on root products — roots carry no classification (01-DOMAIN.md §4). */
+  kindId: number | null;
   operations: BomNodeOperation[];
   materialId: number | null;
   materialWymiary: string;
